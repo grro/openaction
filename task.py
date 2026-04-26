@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from service.store_service import Store, ScopedStore
+from store_service import Store, ScopedStore
 
 
 

@@ -3,10 +3,10 @@ import os
 import sys
 from typing import Dict
 from time import sleep
-from service.mcp_service import MCPServer
+from mcp_service import MCPServer
 from cron_service import CronService
 from mcp_client import McpRegistry
-from service.store_service import Store
+from store_service import Store
 from task_registry import TaskRegistry, CodeRegistry
 from  task import Task
 
