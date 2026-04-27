@@ -1,7 +1,7 @@
 FROM python:3-alpine
 
 ENV port 9485
-ENV dir /etc/app
+ENV dir /etc/app/work
 ENV mcp_config ""
 ENV autoscan ON
 
