@@ -12,13 +12,13 @@ from task import Task
 
 
 
-class ActionMCPServer(MCPServer):
+class OpenActionServer(MCPServer):
     """
     Custom MCP Server implementation that integrates a task registry,
     a cron-based scheduling service, and persistent storage.
     """
 
-    def __init__(self, port: int, dir: str, mcp_server: Dict[str, str]):
+    def __init__(self, port: int, dir: str, mcp_server: Dict[str, str], autoscan):
         """
         Initializes the server and its core components.
 
@@ -27,11 +27,11 @@ class ActionMCPServer(MCPServer):
             dir (str): The base directory path for storing scripts and state.
         """
         # Initialize the parent MCPServer with name and port
-        super().__init__("Actions", port)
+        super().__init__("OpenAction", port)
 
-        self.mcp_registry = McpRegistry(mcp_server)
-        self.store = Store(os.path.join(dir, "state"))
-        self.code_registry = CodeRegistry(os.path.join(dir, "rules"))
+        self.mcp_registry = McpRegistry(mcp_server, autoscan)
+        self.store = Store(name="state", directory=dir)
+        self.code_registry = CodeRegistry(codedir=os.path.join(dir, "tasks"))
         self.task_registry = TaskRegistry(self.code_registry).start()
         self.cron = CronService(self.store, self.mcp_registry, self.task_registry).start()
 
@@ -261,8 +261,8 @@ class ActionMCPServer(MCPServer):
 
 
 
-def run_server(port: int, dir, mcp_server_uris: Dict[str, str]):
-    mcp_server = ActionMCPServer(port, dir, mcp_server_uris)
+def run_server(port: int, dir, mcp_server_uris: Dict[str, str], autoscan: bool):
+    mcp_server = OpenActionServer(port, dir, mcp_server_uris, autoscan)
     try:
         mcp_server.start()
         while True:
@@ -276,7 +276,7 @@ def run_server(port: int, dir, mcp_server_uris: Dict[str, str]):
 def read_config(mcp_servers: str) -> Dict[str, str]:
     """
     Parses a configuration string into a dictionary.
-    Example: "rolladen=http://22.322/zt&licht=http://33.5" -> {"rolladen": "http://...", "licht": "..."}
+    Example: "rolladen=http://22.322/zt&licht=http://33.5" -> {"rollershutter": "http://...", "light": "..."}
     """
     config = {}
 
@@ -307,5 +307,6 @@ def read_config(mcp_servers: str) -> Dict[str, str]:
 if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s %(name)-20s: %(levelname)-8s %(message)s', level=logging.INFO, datefmt='%Y-%m-%d %H:%M:%S')
     logging.getLogger('tornado.access').setLevel(logging.ERROR)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
-    run_server(int(sys.argv[1]), sys.argv[2], read_config(sys.argv[3]))
+    run_server(int(sys.argv[1]), sys.argv[2], read_config(sys.argv[3]), sys.argv[4].upper() == 'ON')

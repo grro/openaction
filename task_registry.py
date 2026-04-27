@@ -1,13 +1,12 @@
 import os
 import logging
 import zipfile
+import json
 from datetime import datetime
 from collections.abc import Callable, Mapping
 from threading import Thread
 from time import sleep
 from typing import Any, Set, cast, Dict
-
-from pydantic import json
 
 from task import Task
 from pathlib import Path
@@ -69,16 +68,19 @@ class CodeRegistry:
         """
         code_file = os.path.join(self.__codedir, f"{name}.py")
         desc_file = os.path.join(self.__codedir, f"{name}.desc")
+        props_file = os.path.join(self.__codedir, f"{name}.props")
 
         # Check if files exist
         if not os.path.exists(code_file) or not os.path.exists(desc_file):
             raise FileNotFoundError(f"Task '{name}' is not registered")
 
-        # Remove both files
+        # Remove all files
         os.remove(code_file)
         os.remove(desc_file)
+        os.remove(props_file)
 
-    def get(self, name: str) -> tuple[str, str]:
+
+    def get(self, name: str) -> tuple[str, str, Dict[str, Any]]:
         """Retrieve task code and description.
 
         Args:
@@ -92,6 +94,7 @@ class CodeRegistry:
         """
         code_file = os.path.join(self.__codedir, f"{name}.py")
         desc_file = os.path.join(self.__codedir, f"{name}.desc")
+        props_file = os.path.join(self.__codedir, f"{name}.props")
 
         if not os.path.exists(code_file) or not os.path.exists(desc_file):
             raise FileNotFoundError(f"Task '{name}' is not registered")
@@ -102,7 +105,10 @@ class CodeRegistry:
         with open(desc_file, "r", encoding="utf-8") as f:
             description = f.read()
 
-        return task_code, description
+        with open(props_file, "r", encoding="utf-8") as f:
+            props = json.load(f)
+
+        return task_code, description, props
 
     def list(self) -> list[str]:
         """List all registered task names.
@@ -210,7 +216,7 @@ class TaskRegistry:
         """
         try:
             # Retrieve task code from registry
-            task_code, task_description = self.__code_registry.get(task_name)
+            task_code, task_description, task_props = self.__code_registry.get(task_name)
             if task_name in self.tasks.keys():
                 if task_code == self.tasks[task_name].code:
                     return
@@ -230,6 +236,6 @@ class TaskRegistry:
 
             typed_cron_getter = cast(Callable[[], str], cron_getter)
             typed_execute = cast(Callable[[Mapping[str, Any], Mapping[str, Any]], None], execute)
-            self.tasks[task_name] = Task.create(task_name, task_code, task_description, typed_cron_getter, typed_execute)
+            self.tasks[task_name] = Task.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
         except Exception as e:
             logging.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")

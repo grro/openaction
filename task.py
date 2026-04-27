@@ -3,7 +3,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-
 from store_service import Store, ScopedStore
 
 
@@ -18,9 +17,10 @@ class TaskResult:
 
 class Task(ABC):
 
-    def __init__(self, name: str, code: str, description: str):
+    def __init__(self, name: str, code: str, description: str, props: Dict[str, Any]):
         self.name = name
         self.description = description
+        self.props = props
         self.code = code
         self.last_executions: List[TaskResult] = list()
 
@@ -37,8 +37,8 @@ class Task(ABC):
         return datetime.now() - self.last_executions[-1].date
 
     @staticmethod
-    def create(name: str, code: str, description: str, cron_getter: Callable[[], str], execute: Callable[[Store, Mapping[str, Any]], None]) -> "Task":
-        return FunctionTaskAdapter(name, code, description, cron_getter, execute)
+    def create(name: str, code: str, description: str, props: Dict[str, Any], cron_getter: Callable[[], str], execute: Callable[[Store, Mapping[str, Any]], None]) -> "Task":
+        return FunctionTaskAdapter(name, code, description, props, cron_getter, execute)
 
     @property
     @abstractmethod
@@ -52,10 +52,10 @@ class Task(ABC):
 
 class FunctionTaskAdapter(Task):
 
-    def __init__(self, name: str, code: str, description: str, cron_getter: Callable[[], str], execute: Callable[[Store, Mapping[str, Any]], None]):
+    def __init__(self, name: str, code: str, description: str, props: Dict[str, Any], cron_getter: Callable[[], str], execute: Callable[[Store, Mapping[str, Any]], None]):
         self.__cron_expression = cron_getter()
         self.__execute = execute
-        super().__init__(name, code, description)
+        super().__init__(name, code, description, props)
 
     @property
     def cron_expression(self) -> str:

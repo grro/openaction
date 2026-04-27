@@ -1,13 +1,40 @@
 import asyncio
 import logging
 import threading
+import time
 from contextlib import AsyncExitStack
+from threading import Thread
 from typing import Dict
+from urllib.parse import urlparse, urlunparse
 from mcp import ClientSession
 from mcp.client.sse import sse_client
+from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
 
 from api.mcp_service import MCPService
+
+
+AUTO_DISCOVERY_EXCLUDED_SERVICE_NAMES = {"OpenAction"}
+
+
+def _is_valid_mcp_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _replace_url_scheme(url: str, scheme: str) -> str:
+    parsed = urlparse(url)
+    path = parsed.path or "/sse"
+    return urlunparse((scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment))
+
+
+def _build_discovered_url(host: str, port: int, path: str) -> str:
+    safe_host = host
+    if ":" in host and not host.startswith("["):
+        safe_host = f"[{host}]"
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    return f"http://{safe_host}:{port}{normalized_path}"
+
 
 
 class SyncMCPClient(MCPService):
@@ -53,7 +80,7 @@ class SyncMCPClient(MCPService):
     def __close(self):
         if self._exit_stack:
             self._run_sync(self._exit_stack.aclose())
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop.call_soon_threadsafe(lambda: self._loop.stop())
         self._thread.join()
 
 
@@ -85,13 +112,121 @@ class SyncMCPClient(MCPService):
 
 
 
+def scan_mcp_servers(timeout_seconds: float = 1.5) -> Dict[str, str]:
+    """Scans the local network for MCP servers via mDNS."""
+    service_type = "_mcp._tcp.local."
+    discovered: Dict[str, str] = {}
+
+    class MCPListener(ServiceListener):
+        def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+            self._process(zc, type_, name)
+
+        def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+            self._process(zc, type_, name)
+
+        def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+            pass # We don't need to handle removal for a quick static scan
+
+        def _process(self, zc: Zeroconf, type_: str, name: str) -> None:
+            info = zc.get_service_info(type_, name)
+            if not info or not info.parsed_addresses():
+                return
+            if info.port is None:
+                return
+
+            host = info.parsed_addresses()[0]
+
+            # Extract path, default to "/sse", and ensure it starts with "/"
+            path_raw = info.properties.get(b"path", b"/sse").decode("utf-8", errors="ignore")
+            path = path_raw if path_raw.startswith("/") else f"/{path_raw}"
+
+            # Clean up the service name (e.g. "MyServer._mcp._tcp.local." -> "MyServer")
+            service_name = name.replace(f".{type_}", "").strip()
+            url = _build_discovered_url(host, info.port, path)
+            if _is_valid_mcp_url(url):
+                discovered[service_name] = url
+            else:
+                logging.warning(f"Skipping discovered MCP service with invalid URL: {service_name} -> {url}")
+
+    zc: Zeroconf | None = None
+    try:
+        zc = Zeroconf()
+        if zc is None:
+            return {}
+        browser = ServiceBrowser(zc, service_type, MCPListener())
+        time.sleep(timeout_seconds)
+        browser.cancel() # Stop browsing before closing
+
+        logging.info(f"mDNS scan finished. Discovered MCP servers: {list(discovered.keys())}")
+        return discovered
+
+    except Exception as e:
+        logging.warning(f"mDNS scan failed, continuing without autodiscovery: {e}")
+        return {}
+    finally:
+        if zc is not None:
+            zc.close()
+
 
 
 class McpRegistry:
 
-    def __init__(self, services: Dict[str, str]):
-        self.__mcp: Dict[str, SyncMCPClient] = {name: SyncMCPClient(url) for name, url in services.items()}
+    def _should_auto_register(self, name: str) -> bool:
+        return name not in AUTO_DISCOVERY_EXCLUDED_SERVICE_NAMES
+
+    def _create_client_with_fallback(self, name: str, url: str) -> SyncMCPClient | None:
+        if not _is_valid_mcp_url(url):
+            logging.warning(f"Skipping MCP server '{name}' due to invalid URL: {url}")
+            return None
+
+        candidate_urls = [url]
+        if urlparse(url).scheme == "http":
+            candidate_urls.append(_replace_url_scheme(url, "https"))
+
+        for candidate_url in candidate_urls:
+            try:
+                client = SyncMCPClient(candidate_url)
+                client.list_tools()  # Validate endpoint early so bad URLs do not stay in the registry.
+                if candidate_url != url:
+                    logging.info(f"MCP server '{name}' switched to HTTPS: {candidate_url}")
+                return client
+            except Exception as e:
+                logging.warning(f"Failed to connect MCP server '{name}' at {candidate_url}: {e}")
+
+        return None
+
+    def __init__(self, services: Dict[str, str], autoscan: bool):
+        self.__mcp: Dict[str, SyncMCPClient] = {}
+        self.services = services
+        self.autoscan = autoscan
         logging.info(f"Initialized McpRegistry with MCP server: {list(self.__mcp.keys())}")
+        Thread(target=self.__loop, daemon=True).start()
+
+
+    def __loop(self):
+        while True:
+            try:
+                for name, url in self.services.items():
+                    if name not in self.__mcp:
+                        client = self._create_client_with_fallback(name, url)
+                        if client is not None:
+                            self.__mcp[name] = client
+            except Exception as e:
+                logging.warning(f"Error during MCP autoscan: {e}")
+
+            if self.autoscan:
+                try:
+                    for name, url in scan_mcp_servers().items():
+                        if not self._should_auto_register(name):
+                            continue
+                        if name not in self.__mcp:
+                            client = self._create_client_with_fallback(name, url)
+                            if client is not None:
+                                self.__mcp[name] = client
+                except Exception as e:
+                    logging.warning(f"Error during MCP autoscan: {e}")
+            time.sleep(1 * 60)
+
 
     def get(self, name: str) -> SyncMCPClient | None:
         """Return the MCP client for the given name, or None."""
