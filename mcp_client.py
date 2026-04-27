@@ -156,8 +156,6 @@ def scan_mcp_servers(timeout_seconds: float = 1.5) -> Dict[str, str]:
         browser = ServiceBrowser(zc, service_type, MCPListener())
         time.sleep(timeout_seconds)
         browser.cancel() # Stop browsing before closing
-
-        logging.info(f"mDNS scan finished. Discovered MCP servers: {list(discovered.keys())}")
         return discovered
 
     except Exception as e:
@@ -170,6 +168,15 @@ def scan_mcp_servers(timeout_seconds: float = 1.5) -> Dict[str, str]:
 
 
 class McpRegistry:
+
+
+    def __init__(self, services: Dict[str, str], autoscan: bool):
+        self.is_running = True
+        self.__mcp: Dict[str, SyncMCPClient] = {}
+        self.services = services
+        self.autoscan = autoscan
+        logging.info(f"Initialized McpRegistry with MCP server: {list(self.__mcp.keys())}")
+        Thread(target=self.__loop, daemon=True).start()
 
     def _should_auto_register(self, name: str) -> bool:
         return name not in AUTO_DISCOVERY_EXCLUDED_SERVICE_NAMES
@@ -195,38 +202,44 @@ class McpRegistry:
 
         return None
 
-    def __init__(self, services: Dict[str, str], autoscan: bool):
-        self.__mcp: Dict[str, SyncMCPClient] = {}
-        self.services = services
-        self.autoscan = autoscan
-        logging.info(f"Initialized McpRegistry with MCP server: {list(self.__mcp.keys())}")
-        Thread(target=self.__loop, daemon=True).start()
-
-
     def __loop(self):
-        while True:
-            try:
-                for name, url in self.services.items():
-                    if name not in self.__mcp:
+
+        while self.is_running:
+            # 1. Process manually configured services
+            # list() prevents runtime errors if self.services is modified from another thread
+            for name, url in list(self.services.items()):
+                if name not in self.__mcp:
+                    try:
                         client = self._create_client_with_fallback(name, url)
                         if client is not None:
                             self.__mcp[name] = client
-            except Exception as e:
-                logging.warning(f"Error during MCP autoscan: {e}")
+                            logging.info(f"Manually configured MCP server '{name}' added")
+                    except Exception as e:
+                        # Corrected: Was previously incorrectly logged as "autoscan"
+                        logging.warning(f"Error adding manual MCP server '{name}': {e}")
 
+            # 2. Process autoscan services
             if self.autoscan:
                 try:
-                    for name, url in scan_mcp_servers().items():
+                    scanned_servers = scan_mcp_servers()
+                    for name, url in scanned_servers.items():
                         if not self._should_auto_register(name):
                             continue
-                        if name not in self.__mcp:
-                            client = self._create_client_with_fallback(name, url)
-                            if client is not None:
-                                self.__mcp[name] = client
-                except Exception as e:
-                    logging.warning(f"Error during MCP autoscan: {e}")
-            time.sleep(1 * 60)
 
+                        if name not in self.__mcp:
+                            try:
+                                client = self._create_client_with_fallback(name, url)
+                                if client is not None:
+                                    self.__mcp[name] = client
+                                    logging.info(f"Autoscanned MCP server '{name}' added")
+                            except Exception as e:
+                                logging.warning(f"Error adding autoscanned MCP server '{name}': {e}")
+                except Exception as e:
+                    # Catches errors if scan_mcp_servers() itself fails
+                    logging.warning(f"Error executing MCP autoscan function: {e}")
+
+            # Wait 60 seconds before the next run
+            time.sleep(60)
 
     def get(self, name: str) -> SyncMCPClient | None:
         """Return the MCP client for the given name, or None."""

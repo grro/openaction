@@ -190,6 +190,12 @@ class TaskRegistry:
 
     def start(self):
         self.is_running = True
+        # Log existing registered tasks at startup
+        existing_tasks = self.__code_registry.list()
+        if existing_tasks:
+            logging.info(f"TaskRegistry started. Registered tasks: {', '.join(existing_tasks)}")
+        else:
+            logging.info("TaskRegistry started. No registered tasks found.")
         Thread(target=self.__loop, daemon=True).start()
         return self
 
