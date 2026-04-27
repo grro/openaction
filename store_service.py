@@ -150,31 +150,6 @@ class Store(StoreService):
             if tempname.exists():
                 tempname.unlink()
 
-    def __str__(self) -> str:
-        return "\n".join(
-            f"{name}: {entry.value} (ttl={entry.expire_date.strftime('%d.%m %H:%M')})"
-            for name, entry in self._data.items()
-        )
-
-    def __repr__(self) -> str:
-        return self.__str__()
-
-    def __getitem__(self, key: str) -> Any:
-        entry = self._data.get(key)
-        if entry is None or entry.is_expired():
-            raise KeyError(key)
-        return copy.deepcopy(entry.value)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.put(key, value)
-
-    def __delitem__(self, key: str) -> None:
-        if key not in self._data or self._data[key].is_expired():
-            raise KeyError(key)
-        self.delete(key)
-
-    def __contains__(self, key: object) -> bool:
-        return isinstance(key, str) and self.has(key)
 
 
 class ScopedStore(StoreService):
@@ -213,15 +188,6 @@ class ScopedStore(StoreService):
         """Return the scope identifier."""
         return self._scope
 
-    def keys(self) -> list[str]:
-        """Return keys within this scope, with scope prefix removed."""
-        prefix = self._scoped_key("")
-        return [k[len(prefix):] for k in self._store.keys() if k.startswith(prefix)]
-
-    def has(self, key: str) -> bool:
-        """Check if a scoped key exists."""
-        return self._store.has(self._scoped_key(key))
-
     def put(self, key: str, value: Any, ttl_sec: int | None = None) -> None:
         """Store a value with the scoped key."""
         self._store.put(self._scoped_key(key), value, ttl_sec)
@@ -230,46 +196,6 @@ class ScopedStore(StoreService):
         """Retrieve a value by scoped key."""
         return self._store.get(self._scoped_key(key), default_value)
 
-    def values(self) -> list[Any]:
-        """Return all values within this scope."""
-        # More efficient than calling get() in a loop as it avoids redundant deep copies
-        # and scoped key conversions if we leverage the underlying data.
-        prefix = self._scoped_key("")
-        return [
-            copy.deepcopy(entry.value)
-            for k, entry in self._store._data.items()
-            if k.startswith(prefix) and not entry.is_expired()
-        ]
-
     def delete(self, key: str) -> None:
         """Delete a scoped key."""
         self._store.delete(self._scoped_key(key))
-
-    def clear(self) -> None:
-        """Clear all values within this scope."""
-        for key in self.keys():
-            self.delete(key)
-
-    def __len__(self) -> int:
-        """Return the number of keys in this scope."""
-        return len(self.keys())
-
-    def __getitem__(self, key: str) -> Any:
-        return self._store[self._scoped_key(key)]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self._store[self._scoped_key(key)] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self._store[self._scoped_key(key)]
-
-    def __contains__(self, key: object) -> bool:
-        return isinstance(key, str) and self.has(key)
-
-    def __str__(self) -> str:
-        items = [(k, self._store.get(self._scoped_key(k))) for k in self.keys()]
-        formatted_items = "\n".join(f"  {k}: {v}" for k, v in items)
-        return f"ScopedStore(scope='{self._scope}')\n{formatted_items}"
-
-    def __repr__(self) -> str:
-        return self.__str__()

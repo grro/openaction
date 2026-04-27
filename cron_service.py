@@ -25,10 +25,10 @@ class CronService:
         return self
 
     def start(self):
+        self.is_running = True
         Thread(target=self.__loop, daemon=True).start()
 
     def __loop(self):
-        self.is_running = True
         while self.is_running:
             now = datetime.now()
 

@@ -222,6 +222,8 @@ class McpRegistry(MCPClientRegistry):
                     for name, url in scanned_servers.items():
                         if name in {"OpenAction"}:
                             continue
+                        if url in self.__mcp.values():
+                            continue
 
                         if name not in self.__mcp:
                             try:

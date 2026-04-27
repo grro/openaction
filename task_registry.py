@@ -1,6 +1,7 @@
 import logging
 import threading
 from collections.abc import Callable, Mapping
+from time import sleep
 from typing import Any, cast
 from code_repository import CodeRepository
 from task import Task
@@ -16,19 +17,15 @@ class TaskRegistry:
         Args:
             code_registry: Registry containing registered task code files.
         """
+        self.__is_running = False
         self._code_registry = code_registry
         self.tasks: dict[str, Task] = {}
 
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
 
 
-    def start(self) -> "TaskRegistry":
+    def start(self):
         """Start the background scanning thread."""
-        if self._thread and self._thread.is_alive():
-            return self  # Already running
-
-        self._stop_event.clear()
+        self.__is_running = True
 
         existing_tasks = self._code_registry.list()
         if existing_tasks:
@@ -36,17 +33,12 @@ class TaskRegistry:
         else:
             logging.info("TaskRegistry started. No registered tasks found.")
 
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+        threading.Thread(target=self._loop, daemon=True).start()
         return self
 
-    def stop(self) -> "TaskRegistry":
+    def stop(self):
         """Stop the background scanning thread gracefully."""
-        self._stop_event.set()
-        if self._thread:
-            # Wait up to 2 seconds for the thread to finish its current loop
-            self._thread.join(timeout=2.0)
-        return self
+        self.__is_running = False
 
     def reload(self) -> None:
         """Manually trigger a scan of the registry."""
@@ -56,15 +48,13 @@ class TaskRegistry:
         """Background loop that scans for tasks periodically."""
         # Wait returns True if the flag is set, False if the timeout occurs.
         # We loop as long as the stop event is NOT set.
-        while not self._stop_event.is_set():
+        while self.__is_running:
             try:
                 self._scan()
             except Exception as e:
                 # Use logging.exception to capture the full traceback for debugging
                 logging.exception(f"Unexpected error in task registry loop: {e}")
-
-            # Pauses for 10 seconds, but wakes up instantly if stop() is called
-            self._stop_event.wait(10.0)
+            sleep(60)
 
     def _scan(self) -> None:
         """Scan registry for registered tasks and load source-code task functions."""
