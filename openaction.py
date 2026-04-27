@@ -38,35 +38,42 @@ class OpenActionServer(MCPServer):
 
         @self.mcp.tool()
         def list_service_api() -> str:
-            """
-            Retrieves the complete api of all service access classes available.
+            """Retrieves the complete API of all available service access classes.
 
-            This tool is essential for understanding the available backend interfaces, method signatures,
-            and data structures. Call this tool when you need to know exactly how to interact with the
-            system's environment or to check which service methods can be used within your generated tasks.
+            This tool is essential for understanding the available backend interfaces,
+            method signatures, and data structures. Call this tool when you need to
+            know exactly how to interact with the system's environment or to check
+            which service methods can be used within your generated tasks.
 
             Returns:
-                str: A formatted string containing the Python source code of all service access,
-                     or an error message if the directory cannot be read.
+                str: A formatted string containing the Python source code of all
+                    service access classes, or an error message if the directory
+                    cannot be read.
             """
-
             try:
-                api_dir = os.path.join(os.path.dirname(__file__), 'api')
-                if not os.path.exists(api_dir):
-                    return "No api directory found."
+                # Resolve the absolute path to the 'api' directory relative to this file
+                api_dir = Path(__file__).parent / "api"
+
+                if not api_dir.is_dir():
+                    return "Error: No 'api' directory found."
 
                 services = []
-                for filename in os.listdir(api_dir):
-                    if filename.endswith(".py") and filename.endswith("_service.py"):
-                        with open(os.path.join(api_dir, filename), "r", encoding="utf-8") as f:
-                            services.append(f"--- {filename} ---\n```python\n{f.read()}\n```")
+
+                # Use glob to effortlessly find all matching service files
+                for file_path in api_dir.glob("*_service.py"):
+                    if file_path.is_file():
+                        # read_text safely opens, reads, and closes the file automatically
+                        content = file_path.read_text(encoding="utf-8")
+                        services.append(f"--- {file_path.name} ---\n```python\n{content}\n```")
 
                 if not services:
-                    return "No service classes found in api directory."
+                    return "No service classes found in the 'api' directory."
 
                 return "\n\n".join(services)
+
             except Exception as e:
-                return f"Error reading api directory: {e}"
+                # Providing the exception type makes debugging significantly easier
+                return f"Error reading API directory: {type(e).__name__} - {e}"
 
 
         @self.mcp.tool()
