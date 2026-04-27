@@ -6,7 +6,7 @@ from datetime import datetime
 from collections.abc import Callable, Mapping
 from threading import Thread
 from time import sleep
-from typing import Any, Set, cast, Dict
+from typing import Any, Set, cast, Dict, Optional
 
 from task import Task
 from pathlib import Path
@@ -199,6 +199,9 @@ class TaskRegistry:
         Thread(target=self.__loop, daemon=True).start()
         return self
 
+    def reload(self):
+        self.__scan()
+
     def __loop(self):
         while self.is_running:
             try:
@@ -209,12 +212,14 @@ class TaskRegistry:
 
     def __scan(self):
         """Scan registry for registered tasks and load source-code task functions."""
-
-        # Get all registered task names from registry
+        new_tasks = {}
         for task_name in self.__code_registry.list():
-            self._load_task_from_registry(task_name)
+            task = self.__task_from_registry(task_name)
+            if task is not None:
+                new_tasks[task_name] = task
+        self.tasks =new_tasks
 
-    def _load_task_from_registry(self, task_name: str) -> None:
+    def __task_from_registry(self, task_name: str) -> Optional[Task]:
         """Load and instantiate a task from the registry.
 
         Args:
@@ -225,7 +230,7 @@ class TaskRegistry:
             task_code, task_description, task_props = self.__code_registry.get(task_name)
             if task_name in self.tasks.keys():
                 if task_code == self.tasks[task_name].code:
-                    return
+                    return None
 
             # Execute task code in an isolated namespace.
             namespace: dict[str, object] = {"__name__": task_name}
@@ -242,6 +247,6 @@ class TaskRegistry:
 
             typed_cron_getter = cast(Callable[[], str], cron_getter)
             typed_execute = cast(Callable[[Mapping[str, Any], Mapping[str, Any]], None], execute)
-            self.tasks[task_name] = Task.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
+            return Task.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
         except Exception as e:
             logging.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")

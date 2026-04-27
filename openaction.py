@@ -103,7 +103,7 @@ class OpenActionServer(MCPServer):
                     underscores, or dots).
                 script (str): The Python code/script to be executed. Try to implement
                     the logic regarding a specific device (such as a heater or roller
-                    shutter) in a single script. Avoid creating several tasks or scripts
+                    shutter) in a single task (script). Avoid creating several scripts
                     regarding the same device.
                 description (str): A brief explanation of what the task does.
                 is_test_task (bool): Flag indicating whether this is a temporary task
@@ -156,6 +156,35 @@ class OpenActionServer(MCPServer):
 
             self.code_registry.register(name, script, description, is_test_task)
             return f"Task '{name}' has been successfully registered."
+
+
+
+        # Expose this function as a callable tool over the Model Context Protocol
+        @self.mcp.tool()
+        def deregister_task(name: str) -> str:
+            """
+            Deregisters and removes a previously registered task.
+
+            Args:
+                name (str): The unique name of the task to remove.
+
+            Returns:
+                str: A confirmation message indicating the operation's result.
+            """
+            try:
+                # Check if the task exists in the active registry
+                if name not in self.task_registry.tasks:
+                    return f"Error: Task '{name}' not found."
+
+                self.code_registry.deregister(name)
+                self.task_registry.reload()
+
+                logging.info(f"Task '{name}' unregistered successfully.")
+                return f"Task '{name}' has been successfully unregistered."
+
+            except Exception as e:
+                logging.error(f"Failed to unregister task '{name}': {e}", exc_info=True)
+                return f"Error: Failed to unregister task '{name}': {str(e)}"
 
 
         @self.mcp.tool()
