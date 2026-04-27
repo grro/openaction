@@ -14,5 +14,5 @@ ADD api/*.py /etc/app/api/
 ADD requirements.txt /etc/app/.
 RUN pip install -r requirements.txt
 
-CMD python /etc/app/openaction.py $port $dir $mcp_config $autoscan
+CMD ["sh", "-c", "python /etc/app/openaction.py \"$port\" \"$dir\" \"$mcp_config\" \"$autoscan\""]
 

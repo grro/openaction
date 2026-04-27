@@ -309,4 +309,17 @@ if __name__ == '__main__':
     logging.getLogger('tornado.access').setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
-    run_server(int(sys.argv[1]), sys.argv[2], read_config(sys.argv[3]), sys.argv[4].upper() == 'ON')
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <port> <work_dir> [mcp_config] [autoscan]")
+        print(f"  port: Server port (e.g., 9485)")
+        print(f"  work_dir: Work directory (e.g., /etc/work)")
+        print(f"  mcp_config: MCP server config, e.g. 'server1=http://host1:port1&server2=http://host2:port2' (default: empty)")
+        print(f"  autoscan: Enable mDNS autodiscovery 'ON'/'OFF' (default: ON)")
+        sys.exit(1)
+
+    port = int(sys.argv[1])
+    work_dir = sys.argv[2]
+    mcp_config = sys.argv[3]
+    autoscan = sys.argv[4].upper() == 'ON'
+
+    run_server(port, work_dir, read_config(mcp_config), autoscan)
