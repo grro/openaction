@@ -3,6 +3,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+
+from api.mcp_service import MCPClientRegistry
+from api.store_service import StoreService
 from store_service import Store, ScopedStore
 
 
@@ -46,7 +49,7 @@ class Task(ABC):
         pass
 
     @abstractmethod
-    def run(self, store: Store, mcp: Mapping[str, Any]) -> str:
+    def run(self, store_service: StoreService, mcp_registry: MCPClientRegistry) -> str:
         pass
 
 
@@ -61,12 +64,12 @@ class FunctionTaskAdapter(Task):
     def cron_expression(self) -> str:
         return self.__cron_expression
 
-    def run(self, store: Store, mcp: Mapping[str, Any]) -> str:
+    def run(self, store_service: StoreService, mcp_registry: MCPClientRegistry) -> str:
         """Execute the task function with the given store and MCP context."""
 
         try:
-            scoped_store: Dict[str, Any] = ScopedStore(store, self.name)
-            result = self.__execute(scoped_store, mcp or {})
+            scoped_store: Dict[str, Any] = ScopedStore(store_service, self.name)
+            result = self.__execute(scoped_store, mcp_registry)
             self.last_executions.append(TaskResult(datetime.now(), result, None))
             return result
         except Exception as e:

@@ -11,7 +11,7 @@ from mcp.client.sse import sse_client
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
 
-from api.mcp_service import MCPService
+from api.mcp_service import MCPClientRegistry, MCPClient
 
 
 
@@ -37,7 +37,7 @@ def _build_discovered_url(host: str, port: int, path: str) -> str:
 
 
 
-class SyncMCPClient(MCPService):
+class SyncMCPClient(MCPClient):
     """Synchronous MCP client communicating over HTTP/SSE transport."""
 
     def __init__(self, url: str):
@@ -167,7 +167,7 @@ def scan_mcp_servers(timeout_seconds: float = 1.5) -> Dict[str, str]:
 
 
 
-class McpRegistry:
+class McpRegistry(MCPClientRegistry):
 
 
     def __init__(self, services: Dict[str, str], autoscan: bool):
@@ -238,7 +238,7 @@ class McpRegistry:
             # Wait 60 seconds before the next run
             time.sleep(60)
 
-    def get(self, name: str) -> SyncMCPClient | None:
+    def get(self, name: str) -> MCPClient:
         """Return the MCP client for the given name, or None."""
         return self.__mcp.get(name)
 

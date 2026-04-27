@@ -7,7 +7,7 @@ from mcp_server import MCPServer
 from cron_service import CronService
 from mcp_client import McpRegistry
 from store_service import Store
-from task_registry import TaskRegistry, CodeRegistry
+from task_registry import TaskRegistry, CodeRepository
 from task import Task
 
 
@@ -31,13 +31,13 @@ class OpenActionServer(MCPServer):
 
         self.mcp_registry = McpRegistry(mcp_server, autoscan)
         self.store = Store(name="state", directory=dir)
-        self.code_registry = CodeRegistry(codedir=os.path.join(dir, "tasks"))
+        self.code_registry = CodeRepository(codedir=os.path.join(dir, "tasks"))
         self.task_registry = TaskRegistry(self.code_registry).start()
         self.cron = CronService(self.store, self.mcp_registry, self.task_registry).start()
 
 
         @self.mcp.tool()
-        def list_service_access() -> str:
+        def list_service_api() -> str:
             """
             Retrieves the complete api of all service access classes available.
 
@@ -94,66 +94,59 @@ class OpenActionServer(MCPServer):
         # Expose this function as a callable tool over the Model Context Protocol
         @self.mcp.tool()
         def register_task(name: str, script: str, description: str, is_test_task: bool = False) -> str:
-            """
-            Registers a new python based task via the MCP interface.
+            """Registers a new Python-based task via the MCP interface.
 
             Args:
-                name (str): The unique identifier for the task. This name must be
-                    URI-safe (containing only alphanumeric characters, hyphens,
-                    underscores, or dots).
-                script (str): The Python code/script to be executed. Try to implement
-                    the logic regarding a specific device (such as a heater or roller
-                    shutter) in a single task (script). Avoid creating several scripts
-                    regarding the same device.
+                name (str): The unique identifier for the task. Must be URI-safe
+                    (alphanumeric, hyphens, underscores, or dots).
+                script (str): The Python code to be executed. Note: Try to consolidate
+                    the logic for a specific device (e.g., a single heater or roller
+                    shutter) into a single task script rather than creating multiple scripts.
                 description (str): A brief explanation of what the task does.
-                is_test_task (bool): Flag indicating whether this is a temporary task
-                    used for validating API calls during script creation. Test tasks
-                    should generally be removed once validation is complete.
+                is_test_task (bool, optional): Flag indicating whether this is a temporary
+                    task used for validating API calls during script creation. Test tasks
+                    should be removed once validation is complete. Defaults to False.
 
             Returns:
                 str: A confirmation message indicating the registration status.
 
+            Script Requirements:
+                The provided `script` string must define the following two functions:
 
-            The script has to provide two functions:
+                1. `def cron_cron() -> str:`
+                    Defines the execution schedule for the task.
+                    Returns:
+                        str: A standard 5-field cron expression (minute, hour, day of month,
+                             month, day of week).
 
-                    def cron_cron() -> str:
-                        Defines the execution schedule for the task.
+                2. `def execute(store: Dict[str, Any], mcp_service: Dict[str, Any]) -> str:`
+                    Callback function executed whenever the task is triggered (e.g., by the cron schedule).
+                    This function contains the core logic of the task. It utilizes the provided
+                    environment services, such as a persistent state store and a collection of
+                    configured MCP services.
 
-                        Returns:
-                        str: A standard 5-field cron expression
-                        (minute, hour, day of month, month, day of week).
+                    Available services can be retrieved using the `list_provided_mcp_services` tool.
+                    The definition of the access classes can be retrieved using the `list_service_access` tool.
 
+                    Error Handling:
+                        The script must implement robust error handling. Responses from MCP clients
+                        must be explicitly evaluated and checked for error states. In case of an
+                        error, an exception MUST be raised. Raising an exception will cause the
+                        task to be retried 1 minute later.
 
-                    def execute(store: Dict[str, Any], mcp_service: Dict[str, Any]) -> str:
-                        Callback function executed whenever the execution (e.g., due to a cron
-                        schedule) is triggered.
+                    API Validation:
+                        When utilizing MCP services, API calls should be validated to ensure correct
+                        interpretation of the API during script creation, prior to integration into
+                        the final script. A temporary test task (`is_test_task=True`) can be
+                        registered for this purpose and removed later.
 
-                        This function contains the core logic of the task. It makes use of
-                        the provided environment services such as a persistent state store
-                        and a collection of configured MCP services. The available services
-                        can be retrieved by using the list_provided_mcp_services tool.
-                        The definition of the access classes can be retrieved by using
-                        the list_service_access tool.
+                    Args:
+                        store [: A task-specific persistence dictionary for storing state across executions. REgarding the API use the tool list_service_api whih gives back th eapi definiton of hte stro
+                        mcp_service [Dict[str, MCPService]]: A mapping of client names to runtime MCP services.
 
-                        The script must also implement robust error handling. In case of an error,
-                        an exception must be raised. Specifically, the responses from MCP clients
-                        must be evaluated and checked for error states. Raising an exception will
-                        cause the task to be retried 1 minute later.
-
-                        When utilizing MCP services, API calls should be validated during script
-                        creation before they are integrated into the final script. A temporary test
-                        task can be registered for this purpose, but it should be removed later.
-
-                        Args:
-                            store (Dict[str, Any]): A task-specific persistence dictionary
-                                for storing state across executions.
-                            mcp_service (Dict[str, Any]): A mapping of client names to runtime
-                                MCP services.
-
-                        Returns:
-                            str: A human-readable summary of the task execution result in a few sentences.
+                    Returns:
+                        str: A human-readable summary of the task execution result in a few sentences.
             """
-
             self.code_registry.register(name, script, description, is_test_task)
             return f"Task '{name}' has been successfully registered."
 
@@ -267,7 +260,7 @@ class OpenActionServer(MCPServer):
 
 
         @self.mcp.tool()
-        def backup_tasks() -> str:
+        def run_backup() -> str:
             """
             Creates a backup of all registered task scripts and descriptions.
 
@@ -287,6 +280,32 @@ class OpenActionServer(MCPServer):
             except Exception as e:
                 logging.error(f"Failed to execute backup_tasks tool: {e}", exc_info=True)
                 return f"Error: Failed to create backup: {str(e)}"
+
+
+        @self.mcp.tool()
+        def list_backups() -> str:
+            """
+            Lists all existing backup files of registered tasks.
+
+            Returns:
+                str: A formatted string containing all available backup filenames,
+                     sorted with newest first, or a message if no backups exist.
+            """
+            try:
+                backups = self.code_registry.list_backup()
+
+                if not backups:
+                    return "No backups found. Create a backup using the 'run_backup' tool."
+
+                output = ["Available Backups:", "=================\n"]
+                for i, backup in enumerate(backups, 1):
+                    output.append(f"{i}. {backup}")
+
+                return "\n".join(output)
+
+            except Exception as e:
+                logging.error(f"Failed to list backups: {e}", exc_info=True)
+                return f"Error: Could not retrieve backup list: {str(e)}"
 
 
 
