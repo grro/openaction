@@ -6,6 +6,9 @@ from collections.abc import Callable, Mapping
 from threading import Thread
 from time import sleep
 from typing import Any, Set, cast, Dict
+
+from pydantic import json
+
 from task import Task
 from pathlib import Path
 
@@ -24,7 +27,7 @@ class CodeRegistry:
         # Ensure the directory exists
         Path(self.__codedir).mkdir(parents=True, exist_ok=True)
 
-    def register(self, name: str, task_code: str, description: str) -> None:
+    def register(self, name: str, task_code: str, description: str, is_test_task: bool) -> None:
         """Register a new task by storing its code and description.
 
         Args:
@@ -40,6 +43,7 @@ class CodeRegistry:
 
         code_file = os.path.join(self.__codedir, f"{name}.py")
         desc_file = os.path.join(self.__codedir, f"{name}.desc")
+        props_file = os.path.join(self.__codedir, f"{name}.props")
 
         # Write task code to Python file
         with open(code_file, "w", encoding="utf-8") as f:
@@ -48,6 +52,10 @@ class CodeRegistry:
         # Write description to description file
         with open(desc_file, "w", encoding="utf-8") as f:
             f.write(description)
+
+        # Write props file
+        with open(props_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"is_test_task": is_test_task}))
 
 
     def deregister(self, name: str) -> None:

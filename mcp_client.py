@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 from contextlib import AsyncExitStack
 from typing import Dict
@@ -6,8 +7,10 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 
+from api.mcp_service import MCPService
 
-class SyncMCPClient:
+
+class SyncMCPClient(MCPService):
     """Synchronous MCP client communicating over HTTP/SSE transport."""
 
     def __init__(self, url: str):
@@ -88,6 +91,7 @@ class McpRegistry:
 
     def __init__(self, services: Dict[str, str]):
         self.__mcp: Dict[str, SyncMCPClient] = {name: SyncMCPClient(url) for name, url in services.items()}
+        logging.info(f"Initialized McpRegistry with MCP server: {list(self.__mcp.keys())}")
 
     def get(self, name: str) -> SyncMCPClient | None:
         """Return the MCP client for the given name, or None."""

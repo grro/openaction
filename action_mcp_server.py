@@ -3,12 +3,12 @@ import os
 import sys
 from typing import Dict
 from time import sleep
-from mcp_service import MCPServer
+from mcp_server import MCPServer
 from cron_service import CronService
 from mcp_client import McpRegistry
 from store_service import Store
 from task_registry import TaskRegistry, CodeRegistry
-from  task import Task
+from task import Task
 
 
 
@@ -37,40 +37,49 @@ class ActionMCPServer(MCPServer):
 
 
         @self.mcp.tool()
-        def backup_tasks() -> str:
+        def list_service_access() -> str:
             """
-            Creates a backup of all registered task scripts and descriptions.
+            Retrieves the complete api of all service access classes available.
+
+            This tool is essential for understanding the available backend interfaces, method signatures,
+            and data structures. Call this tool when you need to know exactly how to interact with the
+            system's environment or to check which service methods can be used within your generated tasks.
 
             Returns:
-                str: A confirmation message containing the absolute path to the backup file,
-                     or an error message if the backup failed.
+                str: A formatted string containing the Python source code of all service access,
+                     or an error message if the directory cannot be read.
             """
+
             try:
-                # Call the backup method we implemented in the CodeRegistry
-                backup_path = self.code_registry.backup()
+                api_dir = os.path.join(os.path.dirname(__file__), 'api')
+                if not os.path.exists(api_dir):
+                    return "No api directory found."
 
-                if backup_path:
-                    return f"Successfully created backup of all tasks. File saved at: {backup_path}"
-                else:
-                    return "Error: Backup process failed. Please check the server logs for details."
+                services = []
+                for filename in os.listdir(api_dir):
+                    if filename.endswith(".py") and filename.endswith("_service.py"):
+                        with open(os.path.join(api_dir, filename), "r", encoding="utf-8") as f:
+                            services.append(f"--- {filename} ---\n```python\n{f.read()}\n```")
 
+                if not services:
+                    return "No service classes found in api directory."
+
+                return "\n\n".join(services)
             except Exception as e:
-                logging.error(f"Failed to execute backup_tasks tool: {e}", exc_info=True)
-                return f"Error: Failed to create backup: {str(e)}"
-
+                return f"Error reading api directory: {e}"
 
 
         @self.mcp.tool()
-        def provided_mcp_servers() -> str:
+        def list_provided_mcp_services() -> str:
             """
-            Lists the external MCP servers that are currently configured and available to tasks.
+            Lists the external MCP services that are currently configured and available to tasks.
 
             Returns:
                 str: A formatted string of available MCP server names and their connection details (e.g., URLs).
             """
             try:
                 if not self.mcp_registry.keys():
-                    return "No external MCP servers are currently configured."
+                    return "No external MCP services are currently configured."
                 output = ["Configured MCP Servers:", "========================\n"]
                 for name in self.mcp_registry.keys():
                     output.append(f"• **{name}**: `{self.mcp_registry[name].url}`")
@@ -78,13 +87,13 @@ class ActionMCPServer(MCPServer):
                 return "\n".join(output)
 
             except Exception as e:
-                logging.error(f"Failed to list provided MCP servers: {e}", exc_info=True)
-                return "Error: Could not retrieve MCP server configurations."
+                logging.error(f"Failed to list provided MCP services: {e}", exc_info=True)
+                return "Error: Could not retrieve MCP service configurations."
 
 
         # Expose this function as a callable tool over the Model Context Protocol
         @self.mcp.tool()
-        def register_task(name: str, script: str, description: str) -> str:
+        def register_task(name: str, script: str, description: str, is_test_task: bool = False) -> str:
             """
             Registers a new python based task via the MCP interface.
 
@@ -92,8 +101,14 @@ class ActionMCPServer(MCPServer):
                 name (str): The unique identifier for the task. This name must be
                     URI-safe (containing only alphanumeric characters, hyphens,
                     underscores, or dots).
-                script (str): The Python code/script to be executed.
+                script (str): The Python code/script to be executed. Try to implement
+                    the logic regarding a specific device (such as a heater or roller
+                    shutter) in a single script. Avoid creating several tasks or scripts
+                    regarding the same device.
                 description (str): A brief explanation of what the task does.
+                is_test_task (bool): Flag indicating whether this is a temporary task
+                    used for validating API calls during script creation. Test tasks
+                    should generally be removed once validation is complete.
 
             Returns:
                 str: A confirmation message indicating the registration status.
@@ -109,31 +124,37 @@ class ActionMCPServer(MCPServer):
                         (minute, hour, day of month, month, day of week).
 
 
-                    def execute(store: Dict[str, Any], mcp: Dict[str, Any]) -> str:
+                    def execute(store: Dict[str, Any], mcp_service: Dict[str, Any]) -> str:
                         Callback function executed whenever the execution (e.g., due to a cron
                         schedule) is triggered.
 
-                        This function contains the core logic of the task. It provides access to
-                        a persistent state store and a collection of configured MCP clients.
+                        This function contains the core logic of the task. It makes use of
+                        the provided environment services such as a persistent state store
+                        and a collection of configured MCP services. The available services
+                        can be retrieved by using the list_provided_mcp_services tool.
+                        The definition of the access classes can be retrieved by using
+                        the list_service_access tool.
 
                         The script must also implement robust error handling. In case of an error,
                         an exception must be raised. Specifically, the responses from MCP clients
                         must be evaluated and checked for error states. Raising an exception will
                         cause the task to be retried 1 minute later.
 
+                        When utilizing MCP services, API calls should be validated during script
+                        creation before they are integrated into the final script. A temporary test
+                        task can be registered for this purpose, but it should be removed later.
+
                         Args:
                             store (Dict[str, Any]): A task-specific persistence dictionary
                                 for storing state across executions.
-                            mcp (Dict[str, Any]): A mapping of client names to runtime
-                                MCP context. An MCPClient supports the method:
-                                `call_tool(name: str, arguments: dict = None)`
-                                to execute a tool request.
+                            mcp_service (Dict[str, Any]): A mapping of client names to runtime
+                                MCP services.
 
                         Returns:
                             str: A human-readable summary of the task execution result in a few sentences.
             """
 
-            self.code_registry.register(name, script, description)
+            self.code_registry.register(name, script, description, is_test_task)
             return f"Task '{name}' has been successfully registered."
 
 
@@ -190,13 +211,15 @@ class ActionMCPServer(MCPServer):
             try:
                 # Find the task by name in the registry
                 task_to_execute: Task | None = None
-                for task in self.task_registry.tasks:
+
+                # Note: Assuming self.task_registry.tasks is a dict, we iterate over .values()
+                for task in self.task_registry.tasks.values():
                     if hasattr(task, 'name') and task.name == name:
                         task_to_execute = task
                         break
 
                 if task_to_execute is None:
-                    return f"Error: Task '{name}' not found in registry. Available tasks: {[t.name for t in self.task_registry.tasks if hasattr(t, 'name')]}"
+                    return f"Error: Task '{name}' not found in registry. Available tasks: {[t.name for t in self.task_registry.tasks.values() if hasattr(t, 'name')]}"
 
                 # Execute the task immediately and capture the result
                 result = task_to_execute.run(self.store, self.mcp_registry)
@@ -214,6 +237,30 @@ class ActionMCPServer(MCPServer):
 
 
 
+        @self.mcp.tool()
+        def backup_tasks() -> str:
+            """
+            Creates a backup of all registered task scripts and descriptions.
+
+            Returns:
+                str: A confirmation message containing the absolute path to the backup file,
+                     or an error message if the backup failed.
+            """
+            try:
+                # Call the backup method we implemented in the CodeRegistry
+                backup_path = self.code_registry.backup()
+
+                if backup_path:
+                    return f"Successfully created backup of all tasks. File saved at: {backup_path}"
+                else:
+                    return "Error: Backup process failed. Please check the server logs for details."
+
+            except Exception as e:
+                logging.error(f"Failed to execute backup_tasks tool: {e}", exc_info=True)
+                return f"Error: Failed to create backup: {str(e)}"
+
+
+
 def run_server(port: int, dir, mcp_server_uris: Dict[str, str]):
     mcp_server = ActionMCPServer(port, dir, mcp_server_uris)
     try:
@@ -221,7 +268,7 @@ def run_server(port: int, dir, mcp_server_uris: Dict[str, str]):
         while True:
             sleep(5)
     except KeyboardInterrupt:
-        logging.info('stopping the server')
+        logging.info('Stopping the server...')
         mcp_server.stop()
 
 
@@ -236,15 +283,15 @@ def read_config(mcp_servers: str) -> Dict[str, str]:
     if not mcp_servers:
         return config
 
-    # Am '&' splitten, um die einzelnen Server-Definitionen zu erhalten
+    # Split by '&' to get the individual server definitions
     pairs = mcp_servers.split('&')
 
     for pair in pairs:
-        # Leere Segmente ignorieren (z.B. wenn versehentlich "&&" im String steht)
+        # Ignore empty segments (e.g., if "&&" is accidentally in the string)
         if not pair.strip():
             continue
 
-        # Nur am ERSTEN '=' splitten, falls die URL selbst '=' enthält
+        # Split only on the FIRST '=' in case the URL itself contains an '='
         parts = pair.split('=', 1)
 
         if len(parts) == 2:
@@ -252,7 +299,7 @@ def read_config(mcp_servers: str) -> Dict[str, str]:
             url = parts[1].strip()
             config[name] = url
         else:
-            logging.warning(f"Ignoriere ungültigen Konfigurations-Eintrag: '{pair}'")
+            logging.warning(f"Ignoring invalid configuration entry: '{pair}'")
 
     return config
 
