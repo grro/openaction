@@ -3,7 +3,7 @@ FROM python:3-alpine
 ENV port 9485
 ENV dir /etc/work
 ENV mcp_config ""
-ENV autoscan ON
+ENV autoscan "ON"
 
 
 RUN cd /etc
