@@ -85,7 +85,10 @@ class MCPServer(ABC):
             logging.info(f"mDNS: Registering {service_name} at {local_ip}:{self.port}")
             self.zc.register_service(self.service_info)
         except Exception as e:
-            logging.error(f"mDNS Registration failed: {e}")
+            logging.error(
+                f"mDNS Registration failed (service will run without discovery): {e}",
+                exc_info=True
+            )
 
     def _unregister_mdns(self):
         if self.zc and self.service_info:

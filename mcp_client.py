@@ -14,7 +14,7 @@ from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 from api.mcp_service import MCPService
 
 
-AUTO_DISCOVERY_EXCLUDED_SERVICE_NAMES = {"OpenAction"}
+
 
 
 def _is_valid_mcp_url(url: str) -> bool:
@@ -175,11 +175,8 @@ class McpRegistry:
         self.__mcp: Dict[str, SyncMCPClient] = {}
         self.services = services
         self.autoscan = autoscan
-        logging.info(f"Initialized McpRegistry with MCP server: {list(self.__mcp.keys())}")
+        logging.info(f"McpRegistry initialized: autoscan={'ON' if autoscan else 'OFF'}, {len(services)} manually configured server(s): {', '.join(services.keys()) if services else 'none'}")
         Thread(target=self.__loop, daemon=True).start()
-
-    def _should_auto_register(self, name: str) -> bool:
-        return name not in AUTO_DISCOVERY_EXCLUDED_SERVICE_NAMES
 
     def _create_client_with_fallback(self, name: str, url: str) -> SyncMCPClient | None:
         if not _is_valid_mcp_url(url):
@@ -223,7 +220,7 @@ class McpRegistry:
                 try:
                     scanned_servers = scan_mcp_servers()
                     for name, url in scanned_servers.items():
-                        if not self._should_auto_register(name):
+                        if name in {"OpenAction"}:
                             continue
 
                         if name not in self.__mcp:
