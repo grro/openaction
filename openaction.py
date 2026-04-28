@@ -122,9 +122,9 @@ class OpenActionServer(MCPServer):
             Returns:
                 str: A confirmation message indicating the registration status.
 
-            =========================================
-            SCRIPT REQUIREMENTS (For LLM Generation):
-            =========================================
+            ====================
+            SCRIPT REQUIREMENTS
+            ====================
             The provided `script` string MUST define the following two functions:
 
             1. `def cron() -> str:`
@@ -139,7 +139,6 @@ class OpenActionServer(MCPServer):
                 Available Environment Tools:
                     Before implementation, call these tools to map the environment:
                     - `list_provided_mcp_services()`: To find available MCP client names.
-                    - `list_provided_shelly_services()`: To find available Shelly device names.
                     - `list_service_api()`: To retrieve method signatures for the injected registries.
 
                 Injected parameters:
@@ -156,11 +155,14 @@ class OpenActionServer(MCPServer):
                     an Exception MUST be raised. Raising an exception ensures the system will
                     automatically retry the task 1 minute later.
 
-                API Validation Protocol:
-                    When integrating new MCP services, validate the API calls by registering a
-                    temporary test task first. Test task names should start with
-                    'test.' and MUST include a `ttl`. Ensure response structures are
-                    correctly handled before final registration.
+                Script Validation Protocol:
+                    Before final registration, you MUST validate the script logic and
+                    API calls by registering a temporary test task.
+                    - Test task names MUST start with 'test.'
+                    - Test tasks MUST include a `ttl`.
+                    - Test tasks must be deleted after validation.
+                    Ensure all JSON response structures are handled correctly before
+                    deploying the final production version.
             """
             self.code_registry.register(name, script, description, ttl)
             self.task_registry.reload()
