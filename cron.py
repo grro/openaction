@@ -5,9 +5,8 @@ from time import sleep
 
 from api.http_service import HttpClient
 from mcp_client import McpRegistry
-from store_service import Store
+from store import Store
 from task import CronTaskAdapter
-from task_registry import TaskRegistry
 
 
 

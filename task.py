@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from api.mcp_service import MCPClientRegistry
 from api.http_service import HttpClient
 from api.store_service import StoreService
-from store_service import ScopedStore, Store
+from store import ScopedStore, Store
 
 
 

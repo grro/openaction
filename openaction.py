@@ -1,17 +1,132 @@
-import logging
 import os
 import sys
+import asyncio
+import logging
+import socket
 from pathlib import Path
 from typing import Dict
-from time import sleep
-from mcp_server import MCPServer
-from cron_service import CronService
+from cron import CronService
 from mcp_client import McpRegistry
-from http_client import HttpClient, AutoRecreateHttpClient
-from store_service import Store
+from http_client import AutoRecreateHttpClient
+from store import Store
 from task import TaskAdapter
-from task_registry import TaskRegistry, CodeRepository
+from task_repository import TaskRepository
+from abc import ABC
+from threading import Thread
+from time import sleep
+from typing import Optional
+from mcp.server.fastmcp import FastMCP
+from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
+
+
+class NoAccessLogsFilter(logging.Filter):
+    """Filter out HTTP access logs from the logging output."""
+    def filter(self, record):
+        # Return False if the log message contains typical Uvicorn access patterns
+        return "GET /sse" not in record.getMessage() and "POST /messages" not in record.getMessage()
+
+# Apply the filter to the root logger's handlers
+for handler in logging.root.handlers:
+    handler.addFilter(NoAccessLogsFilter())
+
+
+class MCPServer(ABC):
+
+    def __init__(self, name: str, port: int):
+        self.name = name
+        self.port = port
+        self.mcp = FastMCP(name, host='0.0.0.0', port=self.port)
+        self.new_loop = asyncio.new_event_loop()
+
+        self.zc: Optional[Zeroconf] = None
+        self.service_info: Optional[ServiceInfo] = None
+
+        # Silence internal MCP server logs
+        logging.getLogger('mcp.server').setLevel(logging.WARNING)
+
+        # Silence Uvicorn HTTP access logs (e.g., POST /messages 202 Accepted)
+        access_logger = logging.getLogger("uvicorn.access")
+        access_logger.setLevel(logging.WARNING)
+        access_logger.propagate = False  # Prevent logs from bubbling up to root logger
+
+        # Silence Uvicorn process startup/shutdown info logs
+        error_logger = logging.getLogger("uvicorn.error")
+        error_logger.setLevel(logging.WARNING)
+        error_logger.propagate = False
+
+
+    async def __run_async(self):
+        await self.mcp.run_sse_async()
+
+    def __start_loop(self, loop):
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    def _register_mdns(self):
+        try:
+            self.zc = Zeroconf(ip_version=IPVersion.V4Only)
+
+            hostname = socket.gethostname()
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+            finally:
+                s.close()
+
+            service_type = "_mcp._tcp.local."
+            service_name = f"{self.name}.{service_type}"
+
+            self.service_info = ServiceInfo(
+                type_=service_type,
+                name=service_name,
+                addresses=[socket.inet_aton(local_ip)],
+                port=self.port,
+                properties={
+                    "version": "1.0",
+                    "path": "/sse",
+                    "server_type": "fastmcp"
+                },
+                server=f"{hostname}.local.",
+            )
+
+            logging.info(f"mDNS: Registering {service_name} at {local_ip}:{self.port}")
+            self.zc.register_service(self.service_info)
+        except Exception as e:
+            logging.error(
+                f"mDNS Registration failed (service will run without discovery): {e}",
+                exc_info=True
+            )
+
+    def _unregister_mdns(self):
+        if self.zc and self.service_info:
+            logging.info("mDNS: Unregistering service...")
+            self.zc.unregister_service(self.service_info)
+            self.zc.close()
+
+    def start(self):
+        self._register_mdns()
+
+        t = Thread(target=self.__start_loop, args=(self.new_loop,), daemon=True)
+        t.start()
+        asyncio.run_coroutine_threadsafe(self.__run_async(), self.new_loop)
+        logging.info(f"MCP Server '{self.name}' running on http://0.0.0.0:{self.port}/sse")
+
+    def start_and_wait(self):
+        self.start()
+        try:
+            while True:
+                sleep(1)
+        except KeyboardInterrupt:
+            logging.info("Shutdown signal received...")
+        finally:
+            self.stop()
+
+    def stop(self):
+        self._unregister_mdns()
+        self.new_loop.stop()
+        logging.info("MCP Server stopped")
 
 
 class OpenActionServer(MCPServer):
@@ -34,8 +149,8 @@ class OpenActionServer(MCPServer):
         self.mcp_registry = McpRegistry(mcp_server, autoscan)
         self.http_client = AutoRecreateHttpClient()
         self.store = Store(name="state", directory=dir)
-        self.task_registry = TaskRegistry(CodeRepository(codedir=os.path.join(dir, "tasks")), self.store).start()
-        self.cron = CronService(self.store, self.mcp_registry, self.task_registry, self.http_client).start()
+        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), self.store).start()
+        self.cron = CronService(self.store, self.mcp_registry, self.task_repository, self.http_client).start()
 
 
         @self.mcp.tool()
@@ -164,7 +279,7 @@ class OpenActionServer(MCPServer):
                     Ensure all JSON response structures are handled correctly before
                     deploying the final production version.
             """
-            self.task_registry.register(name, script, description, ttl)
+            self.task_repository.register(name, script, description, ttl)
             if ttl is None:
                 logging.info(f"Task '{name}' registered successfully.")
             else:
@@ -186,10 +301,10 @@ class OpenActionServer(MCPServer):
             """
             try:
                 # Check if the task exists in the active registry
-                if name not in self.task_registry.tasks:
+                if name not in self.task_repository.tasks:
                     return f"Error: Task '{name}' not found."
 
-                self.task_registry.deregister(name, reason)
+                self.task_repository.deregister(name, reason)
 
                 logging.info(f"Task '{name}' unregistered successfully.")
                 return f"Task '{name}' has been successfully unregistered."
@@ -221,13 +336,13 @@ class OpenActionServer(MCPServer):
                 task_to_execute: TaskAdapter | None = None
 
                 # Note: Assuming self.task_registry.tasks is a dict, we iterate over .values()
-                for task in self.task_registry.tasks.values():
+                for task in self.task_repository.tasks.values():
                     if hasattr(task, 'name') and task.name == name:
                         task_to_execute = task
                         break
 
                 if task_to_execute is None:
-                    return f"Error: Task '{name}' not found in registry. Available tasks: {[t.name for t in self.task_registry.tasks.values() if hasattr(t, 'name')]}"
+                    return f"Error: Task '{name}' not found in registry. Available tasks: {[t.name for t in self.task_repository.tasks.values() if hasattr(t, 'name')]}"
 
                 # Execute the task immediately and capture the result
                 result = task_to_execute.run(self.store, self.mcp_registry, self.http_client)
@@ -255,7 +370,7 @@ class OpenActionServer(MCPServer):
             """
             try:
                 # Call the backup method we implemented in the CodeRegistry
-                backup_path = self.task_registry.backup()
+                backup_path = self.task_repository.backup()
 
                 if backup_path:
                     return f"Successfully created backup of all tasks. File saved at: {backup_path}"
@@ -277,7 +392,7 @@ class OpenActionServer(MCPServer):
                      sorted with newest first, or a message if no backups exist.
             """
             try:
-                backups = self.task_registry.list_backup()
+                backups = self.task_repository.list_backup()
 
                 if not backups:
                     return "No backups found. Create a backup using the 'run_backup' tool."
@@ -303,12 +418,12 @@ class OpenActionServer(MCPServer):
                      and the most recent execution results.
             """
             try:
-                if len(self.task_registry.tasks) == 0:
+                if len(self.task_repository.tasks) == 0:
                     return "Currently, no tasks are registered."
 
                 output = ["Registered Tasks:", "=================\n"]
 
-                for task in self.task_registry.tasks.values():
+                for task in self.task_repository.tasks.values():
                     output.append(f"• **{task.name}**: {task.description}")
 
                     task_data = task.data()
