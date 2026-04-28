@@ -166,7 +166,7 @@ class ScopedStore(StoreService):
         task2_store['status'] = 'idle'     # Actually stores as 'task2:status'
     """
 
-    def __init__(self, store: StoreService, scope: str, separator: str = ":"):
+    def __init__(self, store: Store, scope: str, separator: str = ":"):
         """
         Initialize a scoped store wrapper.
 
@@ -199,3 +199,8 @@ class ScopedStore(StoreService):
     def delete(self, key: str) -> None:
         """Delete a scoped key."""
         self._store.delete(self._scoped_key(key))
+
+    def keys(self) -> list[str]:
+        """Return all keys belonging to this scope, with the scope prefix stripped."""
+        prefix = f"{self._scope}{self._separator}"
+        return [key[len(prefix):] for key in self._store.keys() if key.startswith(prefix)]

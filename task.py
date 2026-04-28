@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from api.mcp_service import MCPClientRegistry
 from api.http_service import HttpClient
 from api.store_service import StoreService
-from store_service import ScopedStore
+from store_service import ScopedStore, Store
 
 
 
@@ -39,13 +39,17 @@ class CronTask(Task):
 class TaskAdapter(ABC):
 
 
-    def __init__(self, name: str, code: str, description: str, props: Dict[str, Any], meth_to_execute: Callable[[StoreService, MCPClientRegistry, HttpClient], str]):
+    def __init__(self, name: str, code: str, description: str, props: Dict[str, Any], meth_to_execute: Callable[[StoreService, MCPClientRegistry, HttpClient], str], store: Store):
         self.name = name
         self.description = description
         self.props = props
         self.code = code
         self.__meth_to_execute = meth_to_execute
         self.last_executions: List[TaskResult] = list()
+        self.scoped_store = ScopedStore(store, self.name)
+
+    def data(self) -> Dict[str, str]:
+        return {key: self.scoped_store.get(key) for key in self.scoped_store.keys()}
 
     def is_still_valid(self) -> bool:
         if "valid_to" in self.props:
@@ -69,8 +73,7 @@ class TaskAdapter(ABC):
         """Execute the task function with the given store and MCP context."""
 
         try:
-            scoped_store = ScopedStore(store_service, self.name)
-            result = self.__meth_to_execute(scoped_store, mcp_registry, http_client)
+            result = self.__meth_to_execute(self.scoped_store, mcp_registry, http_client)
             self.last_executions.append(TaskResult(datetime.now(), result, None))
             return result
         except Exception as e:
@@ -86,11 +89,11 @@ class CronTaskAdapter(TaskAdapter):
 
 
     def __init__(self, name: str, code: str, description: str, props: Dict[str, Any], cron_getter: Callable[[], str],
-                 execute: Callable[[StoreService, MCPClientRegistry, HttpClient], str]):
+                 execute: Callable[[StoreService, MCPClientRegistry, HttpClient], str], store: StoreService):
         self.cron_expression = cron_getter()
-        super().__init__(name, code, description, props, execute)
+        super().__init__(name, code, description, props, execute, store)
 
     @staticmethod
-    def create(name: str, code: str, description: str, props: Dict[str, Any], cron_getter: Callable[[], str], execute: Callable[[StoreService, MCPClientRegistry, HttpClient], str]):
-        return CronTaskAdapter(name, code, description, props, cron_getter, execute)
+    def create(name: str, code: str, description: str, props: Dict[str, Any], cron_getter: Callable[[], str], execute: Callable[[StoreService, MCPClientRegistry, HttpClient], str], store: StoreService):
+        return CronTaskAdapter(name, code, description, props, cron_getter, execute, store)
 

@@ -1,11 +1,10 @@
+import logging
 import requests
 from datetime import datetime, timedelta
 from typing import Any
 from requests import Response, Session
 
 from api.http_service import HttpClient
-
-
 
 class AutoRecreateHttpClient(HttpClient):
     def __init__(self, ttl_minutes: int = 30) -> None:
@@ -14,7 +13,7 @@ class AutoRecreateHttpClient(HttpClient):
         self.session: Session = self._create_session()
 
     def _create_session(self) -> Session:
-        """Schließt die alte Session (falls vorhanden) und öffnet eine neue."""
+        """Closes the old session (if any) and opens a new one."""
         if hasattr(self, 'session') and self.session:
             try:
                 self.session.close()
@@ -23,7 +22,7 @@ class AutoRecreateHttpClient(HttpClient):
 
         session = requests.Session()
         self.last_created = datetime.now()
-        print(f"[{self.last_created.strftime('%H:%M:%S')}] --- Neue Session erstellt ---")
+        logging.info("New http session created")
         return session
 
     def _is_expired(self) -> bool:
@@ -31,29 +30,29 @@ class AutoRecreateHttpClient(HttpClient):
         return datetime.now() - self.last_created > self.ttl
 
     def request(self, method: str, url: str, **kwargs: Any) -> Response:
-        # 1. Vorab-Check: Zeit abgelaufen?
+        # 1. Pre-check: Has the time expired?
         if self._is_expired():
-            print("TTL erreicht. Erneuere Session vor Request.")
+            logging.info("TTL reached. Renewing session before request.")
             self.session = self._create_session()
 
         try:
-            # Request ausführen
+            # Execute request
             response = self.session.request(method, url, **kwargs)
 
-            # Optional: Bei 401 ebenfalls für das nächste Mal neu aufsetzen
+            # Optional: On 401, also recreate the session for the next call
             if response.status_code == 401:
-                print("Status 401: Session wird für den nächsten Aufruf erneuert.")
+                logging.warning("Status 401: Session will be renewed for the next call.")
                 self.session = self._create_session()
 
             return response
 
         except Exception as e:
-            # 2. Fehler-Check: Bei Exception sofort neu erzeugen
-            print(f"Exception abgefangen: {e}")
-            print("Session wird für den nächsten Versuch neu initialisiert.")
+            # 2. Error-check: Recreate immediately on exception
+            logging.exception("Exception caught: %s", e)
+            logging.info("Session will be re-initialized for the next attempt.")
             self.session = self._create_session()
 
-            # Fehler direkt weitergeben (kein Retry)
+            # Pass error directly (no retry)
             raise e
 
     # Shortcuts

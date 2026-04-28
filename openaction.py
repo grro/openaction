@@ -34,10 +34,8 @@ class OpenActionServer(MCPServer):
         self.mcp_registry = McpRegistry(mcp_server, autoscan)
         self.http_client = AutoRecreateHttpClient()
         self.store = Store(name="state", directory=dir)
-        self.code_registry = CodeRepository(codedir=os.path.join(dir, "tasks"))
-        self.task_registry = TaskRegistry(self.code_registry).start()
+        self.task_registry = TaskRegistry(CodeRepository(codedir=os.path.join(dir, "tasks")), self.store).start()
         self.cron = CronService(self.store, self.mcp_registry, self.task_registry, self.http_client).start()
-
 
 
         @self.mcp.tool()
@@ -111,6 +109,7 @@ class OpenActionServer(MCPServer):
             Args:
                 name (str): The unique identifier for the task. Must be URI-safe
                     (alphanumeric, hyphens, underscores, or dots).
+                    A test task name must start with 'test_' and include a `ttl`
                 script (str): The Python source code to be executed. Note: Consolidate
                     the logic for a specific device (e.g., a single heater or roller
                     shutter) into a single task script rather than creating multiple.
@@ -158,20 +157,19 @@ class OpenActionServer(MCPServer):
                 Script Validation Protocol:
                     Before final registration, you MUST validate the script logic and
                     API calls by registering a temporary test task.
-                    - Test task names MUST start with 'test.'
-                    - Test tasks MUST include a `ttl`.
-                    - Test tasks must be deleted after validation.
+                    1. Register a test task
+                    2. Validate via the `execute_task_now` tool.
+                    3. Verify all JSON response structures are handled correctly.
+                    4. Delete the test task after validation.
                     Ensure all JSON response structures are handled correctly before
                     deploying the final production version.
             """
-            self.code_registry.register(name, script, description, ttl)
-            self.task_registry.reload()
+            self.task_registry.register(name, script, description, ttl)
             if ttl is None:
                 logging.info(f"Task '{name}' registered successfully.")
             else:
                 logging.info(f"Task '{name}' registered successfully. ttl={ttl}")
             return f"Task '{name}' has been successfully registered."
-
 
 
         # Expose this function as a callable tool over the Model Context Protocol
@@ -191,8 +189,7 @@ class OpenActionServer(MCPServer):
                 if name not in self.task_registry.tasks:
                     return f"Error: Task '{name}' not found."
 
-                self.code_registry.deregister(name, reason)
-                self.task_registry.reload()
+                self.task_registry.deregister(name, reason)
 
                 logging.info(f"Task '{name}' unregistered successfully.")
                 return f"Task '{name}' has been successfully unregistered."
@@ -203,54 +200,21 @@ class OpenActionServer(MCPServer):
 
 
         @self.mcp.tool()
-        def list_tasks() -> str:
-            """
-            Lists all currently registered tasks.
-
-            Returns:
-                str: A formatted string containing the names, descriptions, and code of all registered tasks.
-            """
-            try:
-                if len(self.task_registry.tasks) == 0:
-                    return "Currently, no tasks are registered."
-
-                output = ["Registered Tasks:", "=================\n"]
-
-                for task in self.task_registry.tasks.values():
-                    output.append(f"• **{task.name}**: {task.description}")
-
-                    if len(task.last_executions) == 0:
-                        output.append("  Last results: never")
-                    else:
-                        output.append("  Last results:")
-                        for run in reversed(task.last_executions):
-                            timestamp = "n/a" if run.date is None else run.date.isoformat()
-                            result_text = run.result if run.error is None else str(run.error)
-                            if len(result_text) > 600:
-                                result_text = result_text[:597] + "..."
-                            output.append(f"    - `{timestamp}`: `{result_text}`")
-
-                    output.append("  Code:")
-                    output.append(f"```python\n{task.code}\n```")
-                    output.append("-------------------\n")
-
-                return "\n".join(output)
-
-            except Exception as e:
-                logging.error(f"Failed to list tasks: {e}", exc_info=True)
-                return "Error: Could not retrieve tasks from the registry. Check server logs."
-
-
-        @self.mcp.tool()
         def execute_task_now(name: str) -> str:
             """
-            Executes a registered task immediately, bypassing the cron schedule.
+            Triggers the immediate manual execution of a registered Python task.
+
+            This tool bypasses the defined cron schedule for testing or urgent
+            operational needs.
 
             Args:
-                name (str): The name of the task to execute.
+                name (str): The unique identifier of the task to be executed.
 
             Returns:
-                str: A confirmation message with execution status and timestamp.
+                str: A report containing the execution status, a timestamp, and the
+                     actual return value from the executed script's logic.
+                     Returns an error message if the task is not found or if the
+                     execution encounters a runtime exception
             """
             try:
                 # Find the task by name in the registry
@@ -280,7 +244,6 @@ class OpenActionServer(MCPServer):
                 return f"Error: Failed to execute task '{name}': {str(e)}"
 
 
-
         @self.mcp.tool()
         def run_backup() -> str:
             """
@@ -292,7 +255,7 @@ class OpenActionServer(MCPServer):
             """
             try:
                 # Call the backup method we implemented in the CodeRegistry
-                backup_path = self.code_registry.backup()
+                backup_path = self.task_registry.backup()
 
                 if backup_path:
                     return f"Successfully created backup of all tasks. File saved at: {backup_path}"
@@ -314,7 +277,7 @@ class OpenActionServer(MCPServer):
                      sorted with newest first, or a message if no backups exist.
             """
             try:
-                backups = self.code_registry.list_backup()
+                backups = self.task_registry.list_backup()
 
                 if not backups:
                     return "No backups found. Create a backup using the 'run_backup' tool."
@@ -328,6 +291,55 @@ class OpenActionServer(MCPServer):
             except Exception as e:
                 logging.error(f"Failed to list backups: {e}", exc_info=True)
                 return f"Error: Could not retrieve backup list: {str(e)}"
+
+        @self.mcp.tool()
+        def list_tasks() -> str:
+            """
+            Retrieves a comprehensive overview of all registered tasks.
+
+            Returns:
+                str: A formatted report including task names, descriptions,
+                     source code, persisted state (store_service data),
+                     and the most recent execution results.
+            """
+            try:
+                if len(self.task_registry.tasks) == 0:
+                    return "Currently, no tasks are registered."
+
+                output = ["Registered Tasks:", "=================\n"]
+
+                for task in self.task_registry.tasks.values():
+                    output.append(f"• **{task.name}**: {task.description}")
+
+                    task_data = task.data()
+                    if task_data:
+                        output.append("  Stored data:")
+                        for k, v in task_data.items():
+                            v_str = str(v)
+                            if len(v_str) > 200:
+                                v_str = v_str[:197] + "..."
+                            output.append(f"    - `{k}`: `{v_str}`")
+
+                    if len(task.last_executions) == 0:
+                        output.append("  Last results: never")
+                    else:
+                        output.append("  Last results:")
+                        for run in reversed(task.last_executions):
+                            timestamp = "n/a" if run.date is None else run.date.isoformat()
+                            result_text = run.result if run.error is None else str(run.error)
+                            if len(result_text) > 600:
+                                result_text = result_text[:597] + "..."
+                            output.append(f"    - `{timestamp}`: `{result_text}`")
+
+                    output.append("  Code:")
+                    output.append(f"```python\n{task.code}\n```")
+                    output.append("-------------------\n")
+
+                return "\n".join(output)
+
+            except Exception as e:
+                logging.error(f"Failed to list tasks: {e}", exc_info=True)
+                return "Error: Could not retrieve tasks from the registry. Check server logs."
 
 
 
@@ -369,7 +381,7 @@ def read_config(mcp_servers: str) -> Dict[str, str]:
             url = parts[1].strip()
             config[name] = url
         else:
-            logging.warning(f"Ignoring invalid configuration entry: '{pair}'")
+            logging.warning(f"Ignoring invalid configuration entry: '{pair}' of '{mcp_servers}'")
 
     return config
 

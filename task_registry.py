@@ -1,8 +1,9 @@
 import logging
 import threading
 from collections.abc import Callable
+from optparse import Option
 from time import sleep
-from typing import Any, cast
+from typing import Any, cast, Optional, List
 from api.mcp_service import MCPClientRegistry
 from api.http_service import HttpClient
 from api.store_service import StoreService
@@ -16,7 +17,7 @@ TaskExecute = Callable[[StoreService, MCPClientRegistry, HttpClient], str]
 class TaskRegistry:
     """Registry that periodically scans and loads tasks from a CodeRepository."""
 
-    def __init__(self, code_registry: CodeRepository):
+    def __init__(self, code_registry: CodeRepository, store: StoreService):
         """Initialize scanner with a task registry.
 
         Args:
@@ -24,9 +25,22 @@ class TaskRegistry:
         """
         self.__is_running = False
         self._code_registry = code_registry
+        self._store = store
         self.tasks: dict[str, TaskAdapter] = {}
 
+    def register(self, name: str, task_code: str, description: str, ttl:int) -> None:
+        self._code_registry.register(name, task_code, description, ttl)
+        self._scan()
 
+    def deregister(self, name: str, reason: str) -> None:
+        self._code_registry.deregister(name, reason)
+        self._scan()
+
+    def backup(self) -> Optional[str]:
+        return self._code_registry.backup()
+
+    def list_backup(self) -> List[str]:
+        return self._code_registry.list_backup()
 
     def start(self):
         """Start the background scanning thread."""
@@ -44,10 +58,6 @@ class TaskRegistry:
     def stop(self):
         """Stop the background scanning thread gracefully."""
         self.__is_running = False
-
-    def reload(self) -> None:
-        """Manually trigger a scan of the registry."""
-        self._scan()
 
     def _loop(self) -> None:
         """Background loop that scans for tasks periodically."""
@@ -117,7 +127,7 @@ class TaskRegistry:
             typed_cron_getter = cast(Callable[[], str], cron_getter)
             typed_execute = cast(TaskExecute, execute)
 
-            return CronTaskAdapter.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
+            return CronTaskAdapter.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute, self._store)
 
         except Exception as e:
             logging.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")
@@ -127,5 +137,5 @@ class TaskRegistry:
         for task in list(self.tasks.values()):
             if not task.is_still_valid():
                 self._code_registry.deregister(task.name, reason='ttl reached')
-                self.reload()
+                self._scan()
                 logging.info(f"Task '{task.name}' has expired and was removed from the registry.")

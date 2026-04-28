@@ -4,7 +4,7 @@ import re
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, List
 
 
 class CodeRepository:
@@ -117,7 +117,7 @@ class CodeRepository:
         code_file, desc_file, _ = self._get_paths(name)
         return code_file.exists()
 
-    def list_backup(self) -> list[str]:
+    def list_backup(self) -> List[str]:
         """List all backup files in the code directory.
 
         Returns:
@@ -134,7 +134,7 @@ class CodeRepository:
             logging.warning(f"Error listing backups: {e}")
             return []
 
-    def backup(self) -> str | None:
+    def backup(self) -> Optional[str]:
         """Create a zip backup of all registered task files inside the code directory.
 
         Returns:

@@ -7,7 +7,7 @@ class StoreService(ABC):
     """
 
     @abstractmethod
-    def put(self, key: str, value: Any, ttl_sec: int | None = None) -> None:
+    def put(self, key: str, value: str, ttl_sec: int | None = None) -> None:
         """
         Store a value in the storage with the specified key.
 
@@ -21,7 +21,7 @@ class StoreService(ABC):
         pass
 
     @abstractmethod
-    def get(self, key: str, default_value: Any = None) -> Any:
+    def get(self, key: str, default_value: str = None) -> str:
         """
         Retrieve a value from the storage using its key.
 
