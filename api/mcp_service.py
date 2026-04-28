@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
 
 from mcp import ListToolsResult
 from mcp.types import CallToolResult
@@ -43,7 +43,7 @@ class MCPClientRegistry(ABC):
     """
 
     @abstractmethod
-    def get(self, name: str) -> MCPClient:
+    def get(self, name: str) -> Optional[MCPClient]:
         """
         Retrieves an MCPClient instance by its assigned name.
 

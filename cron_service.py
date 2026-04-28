@@ -1,20 +1,23 @@
+import logging
 from datetime import datetime, timedelta
 from threading import Thread
 from time import sleep
 
+from api.http_service import HttpClient
 from mcp_client import McpRegistry
 from store_service import Store
-from task import Task
+from task import CronTaskAdapter
 from task_registry import TaskRegistry
 
 
 
 class CronService:
 
-    def __init__(self, store: Store, mcp_registry: McpRegistry, task_registry : TaskRegistry):
+    def __init__(self, store: Store, mcp_registry: McpRegistry, task_registry : TaskRegistry, http_session: HttpClient):
         self.is_running = False
         self.store = store
         self.mcp_registry = mcp_registry
+        self.http_session = http_session
         self.task_registry = task_registry
 
     def __str__(self):
@@ -36,12 +39,12 @@ class CronService:
             for task in self.task_registry.tasks.values():
                 try:
                     if self._should_run(task, now, run_key):
-                        task.run(self.store, self.mcp_registry)
-                except Exception as e:
-                    print(f"Error in cron service for task {task}: {e}")
+                        task.run(self.store, self.mcp_registry, self.http_session)
+                except Exception:
+                    logging.exception("Error in cron service for task %s", task)
             sleep(1)
 
-    def _should_run(self, task: Task, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
+    def _should_run(self, task: CronTaskAdapter, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
         # If task failed recently, wait 1 minute before retrying
         time_since_error = task.time_since_last_error()
         if time_since_error is not None:

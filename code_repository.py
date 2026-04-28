@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,14 +28,14 @@ class CodeRepository:
             self._codedir / f"{name}.props"
         )
 
-    def register(self, name: str, task_code: str, description: str, is_test_task: bool) -> None:
+    def register(self, name: str, task_code: str, description: str, ttl:int) -> None:
         """Register a new task by storing its code and description.
 
         Args:
             name: Task name (used as filename prefix).
             task_code: Python code for the task.
             description: Task description.
-            is_test_task: Boolean indicating if this is a test task.
+            ttl: time to live in sec
 
         Raises:
             ValueError: If task name is empty or contains invalid characters.
@@ -49,9 +49,12 @@ class CodeRepository:
         # Write files
         code_file.write_text(task_code, encoding="utf-8")
         desc_file.write_text(description, encoding="utf-8")
-        props_file.write_text(json.dumps({"is_test_task": is_test_task}), encoding="utf-8")
+        if ttl is None:
+            props_file.write_text(json.dumps({}), encoding="utf-8")
+        else:
+            props_file.write_text(json.dumps({"valid_to": (datetime.now() + timedelta(seconds=ttl)).isoformat()}), encoding="utf-8")
 
-    def deregister(self, name: str) -> None:
+    def deregister(self, name: str, reason: str) -> None:
         """Remove a task and its description.
 
         Args:
@@ -89,7 +92,10 @@ class CodeRepository:
 
         # Safely load JSON, fallback to empty dict if properties file is corrupted
         try:
-            props = json.loads(props_file.read_text(encoding="utf-8"))
+            if props_file.exists():
+                props = json.loads(props_file.read_text(encoding="utf-8"))
+            else:
+                props = {}
         except json.JSONDecodeError:
             props = {}
 
@@ -109,7 +115,7 @@ class CodeRepository:
         Requires both the .py and .desc files to exist to be considered valid.
         """
         code_file, desc_file, _ = self._get_paths(name)
-        return code_file.exists() and desc_file.exists()
+        return code_file.exists()
 
     def list_backup(self) -> list[str]:
         """List all backup files in the code directory.

@@ -1,3 +1,4 @@
+requests>=2.31.0
 appdirs>=1.4.4
 mcp>=1.27.0
 zeroconf>=0.148.0

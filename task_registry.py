@@ -1,11 +1,16 @@
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from time import sleep
 from typing import Any, cast
+from api.mcp_service import MCPClientRegistry
+from api.http_service import HttpClient
+from api.store_service import StoreService
 from code_repository import CodeRepository
-from task import Task
+from task import TaskAdapter, CronTaskAdapter
 
+
+TaskExecute = Callable[[StoreService, MCPClientRegistry, HttpClient], str]
 
 
 class TaskRegistry:
@@ -19,7 +24,7 @@ class TaskRegistry:
         """
         self.__is_running = False
         self._code_registry = code_registry
-        self.tasks: dict[str, Task] = {}
+        self.tasks: dict[str, TaskAdapter] = {}
 
 
 
@@ -52,13 +57,16 @@ class TaskRegistry:
             try:
                 self._scan()
             except Exception as e:
-                # Use logging.exception to capture the full traceback for debugging
-                logging.exception(f"Unexpected error in task registry loop: {e}")
+                logging.exception(f"Unexpected error in periodic scan: {e}")
+            try:
+                self._clean_up()
+            except Exception as e:
+                logging.exception(f"Unexpected error in periodic clean up: {e}")
             sleep(60)
 
     def _scan(self) -> None:
         """Scan registry for registered tasks and load source-code task functions."""
-        current_tasks: dict[str, Task] = {}
+        current_tasks: dict[str, TaskAdapter] = {}
 
         for task_name in self._code_registry.list():
             try:
@@ -82,7 +90,8 @@ class TaskRegistry:
         # Update the tasks dictionary (this also naturally drops tasks that were deleted from the repository)
         self.tasks = current_tasks
 
-    def _load_task(self, task_name: str, task_code: str, task_description: str, task_props: dict[str, Any]) -> Task | None:
+
+    def _load_task(self, task_name: str, task_code: str, task_description: str, task_props: dict[str, Any]) -> TaskAdapter | None:
         """Load and instantiate a task from raw code strings.
 
         Args:
@@ -96,20 +105,27 @@ class TaskRegistry:
             namespace: dict[str, object] = {"__name__": task_name}
             exec(task_code, namespace)
 
-            cron_getter = namespace.get("cron_cron")
+            cron_getter = namespace.get("cron")
             execute = namespace.get("execute")
 
             if not callable(cron_getter):
-                raise ValueError("Missing required function 'cron_cron() -> str'")
+                raise ValueError("Missing required function 'cron() -> str'")
 
             if not callable(execute):
-                raise ValueError("Missing required function 'execute(store, mcp) -> None'")
+                raise ValueError("Missing required function 'execute(store_service, mcp_registry, shelly_registry) -> str'")
 
             typed_cron_getter = cast(Callable[[], str], cron_getter)
-            typed_execute = cast(Callable[[Mapping[str, Any], Mapping[str, Any]], None], execute)
+            typed_execute = cast(TaskExecute, execute)
 
-            return Task.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
+            return CronTaskAdapter.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
 
         except Exception as e:
             logging.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")
             return None
+
+    def _clean_up(self):
+        for task in list(self.tasks.values()):
+            if not task.is_still_valid():
+                self._code_registry.deregister(task.name, reason='ttl reached')
+                self.reload()
+                logging.info(f"Task '{task.name}' has expired and was removed from the registry.")

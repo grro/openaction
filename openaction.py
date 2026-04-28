@@ -1,14 +1,16 @@
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Dict
 from time import sleep
 from mcp_server import MCPServer
 from cron_service import CronService
 from mcp_client import McpRegistry
+from http_client import HttpClient, AutoRecreateHttpClient
 from store_service import Store
+from task import TaskAdapter
 from task_registry import TaskRegistry, CodeRepository
-from task import Task
 
 
 
@@ -18,7 +20,7 @@ class OpenActionServer(MCPServer):
     a cron-based scheduling service, and persistent storage.
     """
 
-    def __init__(self, port: int, dir: str, mcp_server: Dict[str, str], autoscan):
+    def __init__(self, port: int, dir: str, mcp_server: Dict[str, str],autoscan: bool):
         """
         Initializes the server and its core components.
 
@@ -30,10 +32,12 @@ class OpenActionServer(MCPServer):
         super().__init__("OpenAction", port)
 
         self.mcp_registry = McpRegistry(mcp_server, autoscan)
+        self.http_client = AutoRecreateHttpClient()
         self.store = Store(name="state", directory=dir)
         self.code_registry = CodeRepository(codedir=os.path.join(dir, "tasks"))
         self.task_registry = TaskRegistry(self.code_registry).start()
-        self.cron = CronService(self.store, self.mcp_registry, self.task_registry).start()
+        self.cron = CronService(self.store, self.mcp_registry, self.task_registry, self.http_client).start()
+
 
 
         @self.mcp.tool()
@@ -100,68 +104,77 @@ class OpenActionServer(MCPServer):
 
         # Expose this function as a callable tool over the Model Context Protocol
         @self.mcp.tool()
-        def register_task(name: str, script: str, description: str, is_test_task: bool = False) -> str:
-            """Registers a new Python-based task via the MCP interface.
+        def register_task(name: str, script: str, description: str, ttl:int = None) -> str:
+            """
+            Registers a new Python-based task via the MCP interface.
 
             Args:
                 name (str): The unique identifier for the task. Must be URI-safe
                     (alphanumeric, hyphens, underscores, or dots).
-                script (str): The Python code to be executed. Note: Try to consolidate
+                script (str): The Python source code to be executed. Note: Consolidate
                     the logic for a specific device (e.g., a single heater or roller
-                    shutter) into a single task script rather than creating multiple scripts.
+                    shutter) into a single task script rather than creating multiple.
                 description (str): A brief explanation of what the task does.
-                is_test_task (bool, optional): Flag indicating whether this is a temporary
-                    task used for validating API calls during script creation. Test tasks
-                    should be removed once validation is complete. Defaults to False.
+                ttl (int, optional): The "Time To Live" in seconds. This is used for
+                    test tasks only. Test tasks should always be created with a TTL
+                    greater than 900 (15 min) to avoid orphaned processes
 
             Returns:
                 str: A confirmation message indicating the registration status.
 
-            Script Requirements:
-                The provided `script` string must define the following two functions:
+            =========================================
+            SCRIPT REQUIREMENTS (For LLM Generation):
+            =========================================
+            The provided `script` string MUST define the following two functions:
 
-                1. `def cron_cron() -> str:`
-                    Defines the execution schedule for the task.
-                    Returns:
-                        str: A standard 5-field cron expression (minute, hour, day of month,
-                             month, day of week).
+            1. `def cron() -> str:`
+                Defines the execution schedule for the task.
+                Returns:
+                    str: A standard 5-field cron expression (minute, hour, day of month, month, day of week).
 
-                2. `def execute(store: Dict[str, Any], mcp_service: Dict[str, Any]) -> str:`
-                    Callback function executed whenever the task is triggered (e.g., by the cron schedule).
-                    This function contains the core logic of the task. It utilizes the provided
-                    environment services, such as a persistent state store and a collection of
-                    configured MCP services.
+            2. `def execute(store_service: StoreService, mcp_registry: MCPClientRegistry, session: HttpSession) -> str:`
+                The callback function executed whenever the task is triggered by the cron schedule.
+                This function contains the core logic of the task.
 
-                    Available services can be retrieved using the `list_provided_mcp_services` tool.
-                    The definition of the access classes can be retrieved using the `list_service_access` tool.
+                Available Environment Tools:
+                    Before implementation, call these tools to map the environment:
+                    - `list_provided_mcp_services()`: To find available MCP client names.
+                    - `list_provided_shelly_services()`: To find available Shelly device names.
+                    - `list_service_api()`: To retrieve method signatures for the injected registries.
 
-                    Error Handling:
-                        The script must implement robust error handling. Responses from MCP clients
-                        must be explicitly evaluated and checked for error states. In case of an
-                        error, an exception MUST be raised. Raising an exception will cause the
-                        task to be retried 1 minute later.
+                Injected parameters:
+                    store_service (StoreService): A persistence service for storing state across executions.
+                    mcp_registry (MCPClientRegistry): A registry for accessing configured MCP clients.
+                    http_client (HttpClient): A http client with cached sessions
 
-                    API Validation:
-                        When utilizing MCP services, API calls should be validated to ensure correct
-                        interpretation of the API during script creation, prior to integration into
-                        the final script. A temporary test task (`is_test_task=True`) can be
-                        registered for this purpose and removed later.
+                Nested Returns:
+                    str: A human-readable summary of the task execution result in a few sentences.
 
-                    Args:
-                        store [: A task-specific persistence dictionary for storing state across executions. REgarding the API use the tool list_service_api whih gives back th eapi definiton of hte stro
-                        mcp_service [Dict[str, MCPService]]: A mapping of client names to runtime MCP services.
+                Mandatory Error Handling:
+                    The script must implement robust error handling. Responses from external clients
+                    and services MUST be explicitly evaluated for error states. If an error occurs,
+                    an Exception MUST be raised. Raising an exception ensures the system will
+                    automatically retry the task 1 minute later.
 
-                    Returns:
-                        str: A human-readable summary of the task execution result in a few sentences.
+                API Validation Protocol:
+                    When integrating new MCP services, validate the API calls by registering a
+                    temporary test task first. Test task names should start with
+                    'test.' and MUST include a `ttl`. Ensure response structures are
+                    correctly handled before final registration.
             """
-            self.code_registry.register(name, script, description, is_test_task)
+            self.code_registry.register(name, script, description, ttl)
+            self.task_registry.reload()
+            if ttl is None:
+                logging.info(f"Task '{name}' registered successfully.")
+            else:
+                logging.info(f"Task '{name}' registered successfully. ttl={ttl}")
             return f"Task '{name}' has been successfully registered."
 
 
 
         # Expose this function as a callable tool over the Model Context Protocol
         @self.mcp.tool()
-        def deregister_task(name: str) -> str:
+        def deregister_task(name: str, reason: str) -> str:
             """
             Deregisters and removes a previously registered task.
 
@@ -176,7 +189,7 @@ class OpenActionServer(MCPServer):
                 if name not in self.task_registry.tasks:
                     return f"Error: Task '{name}' not found."
 
-                self.code_registry.deregister(name)
+                self.code_registry.deregister(name, reason)
                 self.task_registry.reload()
 
                 logging.info(f"Task '{name}' unregistered successfully.")
@@ -239,7 +252,7 @@ class OpenActionServer(MCPServer):
             """
             try:
                 # Find the task by name in the registry
-                task_to_execute: Task | None = None
+                task_to_execute: TaskAdapter | None = None
 
                 # Note: Assuming self.task_registry.tasks is a dict, we iterate over .values()
                 for task in self.task_registry.tasks.values():
@@ -251,7 +264,7 @@ class OpenActionServer(MCPServer):
                     return f"Error: Task '{name}' not found in registry. Available tasks: {[t.name for t in self.task_registry.tasks.values() if hasattr(t, 'name')]}"
 
                 # Execute the task immediately and capture the result
-                result = task_to_execute.run(self.store, self.mcp_registry)
+                result = task_to_execute.run(self.store, self.mcp_registry, self.http_client)
 
                 # Format execution timestamp if available
                 timestamp = getattr(task_to_execute, 'last_execution', None)
@@ -364,13 +377,8 @@ if __name__ == '__main__':
     logging.getLogger('tornado.access').setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <port> <work_dir> [mcp_config] [autoscan]")
-        print(f"  port: Server port (e.g., 9485)")
-        print(f"  work_dir: Work directory (e.g., /etc/work)")
-        print(f"  mcp_config: MCP server config, e.g. 'server1=http://host1:port1&server2=http://host2:port2' (default: empty)")
-        print(f"  autoscan: Enable mDNS autodiscovery 'ON'/'OFF' (default: ON)")
-        sys.exit(1)
+    logging.getLogger('starlette.middleware.base').setLevel(logging.WARNING)
+    logging.getLogger('fastmcp').setLevel(logging.WARNING)
 
     port = int(sys.argv[1])
     work_dir = sys.argv[2]

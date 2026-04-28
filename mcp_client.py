@@ -2,9 +2,10 @@ import asyncio
 import logging
 import threading
 import time
+import requests
 from contextlib import AsyncExitStack
 from threading import Thread
-from typing import Dict
+from typing import Dict, Optional
 from urllib.parse import urlparse, urlunparse
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -178,6 +179,19 @@ class McpRegistry(MCPClientRegistry):
         logging.info(f"McpRegistry initialized: autoscan={'ON' if autoscan else 'OFF'}, {len(services)} manually configured server(s): {', '.join(services.keys()) if services else 'none'}")
         Thread(target=self.__loop, daemon=True).start()
 
+    def _check_reachability(self, url: str, timeout: float = 2.0) -> bool:
+        """
+        Performs a simple HTTP request to verify if the endpoint is alive.
+        """
+        try:
+            # We use GET with stream=True so we don't download the body (crucial for SSE).
+            # Even if it returns 405 (Method Not Allowed), it means the server is up.
+            response = requests.get(url, timeout=timeout, stream=True)
+            return response.status_code < 500
+        except requests.RequestException as e:
+            logging.debug(f"Reachability check failed for {url}: {e}")
+            return False
+
     def _create_client_with_fallback(self, name: str, url: str) -> SyncMCPClient | None:
         if not _is_valid_mcp_url(url):
             logging.warning(f"Skipping MCP server '{name}' due to invalid URL: {url}")
@@ -188,6 +202,11 @@ class McpRegistry(MCPClientRegistry):
             candidate_urls.append(_replace_url_scheme(url, "https"))
 
         for candidate_url in candidate_urls:
+
+            # 1. Quick reachability check
+            if not self._check_reachability(candidate_url, timeout=4):
+                continue
+
             try:
                 client = SyncMCPClient(candidate_url)
                 client.list_tools()  # Validate endpoint early so bad URLs do not stay in the registry.
@@ -200,7 +219,7 @@ class McpRegistry(MCPClientRegistry):
         return None
 
     def __loop(self):
-
+        self.is_running = True
         while self.is_running:
             # 1. Process manually configured services
             # list() prevents runtime errors if self.services is modified from another thread
@@ -240,7 +259,7 @@ class McpRegistry(MCPClientRegistry):
             # Wait 60 seconds before the next run
             time.sleep(60)
 
-    def get(self, name: str) -> MCPClient:
+    def get(self, name: str) -> Optional[MCPClient]:
         """Return the MCP client for the given name, or None."""
         return self.__mcp.get(name)
 
