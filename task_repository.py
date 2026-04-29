@@ -189,6 +189,8 @@ class TaskRepository:
     def register(self, name: str, task_code: str, description: str, ttl:int) -> None:
         self._code_registry.register(name, task_code, description, ttl)
         self._scan()
+        if name not in self.tasks:
+            raise ValueError(f"Failed to register task '{name}': Please check your script syntax, required functions, and logs. It was rejected by the registry.")
 
     def deregister(self, name: str, reason: str) -> None:
         self._code_registry.deregister(name, reason)
@@ -275,12 +277,6 @@ class TaskRepository:
 
             cron_getter = namespace.get("cron")
             execute = namespace.get("execute")
-
-            if not callable(cron_getter):
-                raise ValueError("Missing required function 'cron() -> str'")
-
-            if not callable(execute):
-                raise ValueError("Missing required function 'execute(store_service, mcp_registry, shelly_registry) -> str'")
 
             typed_cron_getter = cast(Callable[[], str], cron_getter)
             typed_execute = cast(TaskExecute, execute)

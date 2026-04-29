@@ -159,6 +159,9 @@ class OpenActionServer(MCPServer):
             It reveals the actual class definitions, method signatures, and docstrings
             for the clients injected into your 'execute' function.
 
+            Note: No Python imports are required to use the injected services.
+            They are provided automatically as arguments at runtime.
+
             Use this tool to:
             1. Check which methods exist on a specific registry.
             2. Understand the required arguments and return types for hardware interactions.
@@ -205,7 +208,11 @@ class OpenActionServer(MCPServer):
             This tool distinguishes between:
             - MCP [SSE]: Native Model Context Protocol servers. Access via 'mcp_registry.get("name")'.
             - HTTP [REST]: Standard web services. Access via 'http_client'.
-            - SHELLY: Shelly devices (switches, rollershutters, ...).
+            - SHELLY: Local IoT devices (smart switches, roller shutters, etc.).
+              Access via: The injected `http_client` to call their URL.
+              IMPORTANT: The specific API is NOT provided by 'list_service_apis'.
+              You must determine the correct HTTP endpoints yourself (e.g., Shelly Gen 1
+              '/relay/0' or Gen 2 RPC) based on the device URL and common Shelly documentation.
 
             Returns:
                 str: A formatted list of service names, protocols, and endpoints.
@@ -254,6 +261,52 @@ class OpenActionServer(MCPServer):
 
             Returns:
                 str: A confirmation message indicating the registration status.
+
+            ====================
+            SCRIPT REQUIREMENTS
+            ====================
+            The provided `script` string MUST define the following two functions:
+
+            1. `def cron():`
+                Defines the execution schedule for the task.
+                Returns:
+                    A standard 5-field cron expression (minute, hour, day of month, month, day of week).
+
+            2. `def execute(store_service, mcp_registry, http_client):`
+                The callback function executed whenever the task is triggered by the cron schedule.
+                This function contains the core logic of the task.
+                Returns:
+                    A human-readable textual summary of the execution result in a few sentences.
+
+                Available Environment Tools:
+                    Before implementation, call these tools to map the environment:
+                    - `list_provided_services()`: To find available services
+                    - `list_service_apis()`: To retrieve method signatures for the injected registries.
+
+                Injected parameters:
+                    store_service (StoreService): A persistence service for storing state across executions.
+                    mcp_registry (MCPClientRegistry): A registry for accessing configured MCP clients.
+                    http_client (HttpClient): A http client with cached sessions
+
+                Nested Returns:
+                    str: A human-readable summary of the task execution result in a few sentences.
+
+                Mandatory Error Handling:
+                    The script must implement robust error handling. Responses from external clients
+                    and services MUST be explicitly evaluated for error states. If an error occurs,
+                    an Exception MUST be raised. Raising an exception ensures the system will
+                    automatically retry the task 1 minute later.
+
+                API Validation Protocol:
+                    When integrating new MCP services, validate the API calls by registering a
+                    temporary test task first. Ensure response structures are correctly handled
+                    before final registration.
+
+                Script Validation Protocol:
+                    Before final registration, you MUST validate the script logic and
+                    API calls by registering a temporary test task. Test tasks must be deleted
+                    after validation. Ensure all JSON response structures are handled correctly
+                    before deploying the final production version.
             """
 
             if is_test:
@@ -402,25 +455,29 @@ class OpenActionServer(MCPServer):
                         break
 
                 if task_to_execute is None:
-                    return f"Error: Task '{name}' not found in registry. Available tasks: {[t.name for t in self.task_repository.tasks.values() if hasattr(t, 'name')]}"
+                    available_tasks = [t.name for t in self.task_repository.tasks.values() if hasattr(t, 'name')]
+                    return f"Error: Task '{name}' not found in registry. Available tasks: {available_tasks}"
 
                 # Execute the task immediately and capture the result
-                result = task_to_execute.run()
+                raw_result = task_to_execute.run()
 
+                # Limit the result output to 300 characters to prevent log/token flooding
+                result_str = str(raw_result)
+                if len(result_str) > 300:
+                    result_str = result_str[:297] + "..."
 
-                logger.info( f"Task '{name}' executed \nResult: {result}")
+                logger.info(f"Task '{name}' executed \nResult: {result_str}")
 
                 # Format execution timestamp if available
                 timestamp = getattr(task_to_execute, 'last_execution', None)
                 if timestamp:
-                    return f"Task '{name}' executed at {timestamp.isoformat()}.\nResult: {result}"
+                    return f"Task '{name}' executed at {timestamp.isoformat()}.\nResult: {result_str}"
                 else:
-                    return f"Task '{name}' executed \nResult: {result}"
+                    return f"Task '{name}' executed \nResult: {result_str}"
 
             except Exception as e:
                 logger.error(f"Failed to execute task '{name}': {e}", exc_info=True)
                 return f"Error: Failed to execute task '{name}': {str(e)}"
-
 
         @self.mcp.tool()
         def run_backup() -> str:

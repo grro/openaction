@@ -164,8 +164,9 @@ class CronTaskAdapter(TaskAdapter):
                  store: StoreService,
                  mcp_registry: McpRegistry,
                  http_client: HttpClient):
-        self.cron_expression = cron_getter()
         super().__init__(name, code, description, props, execute, store, mcp_registry, http_client)
+        self.cron_expression = cron_getter()
+
 
 
 class TaskFactory:
