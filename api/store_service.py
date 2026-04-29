@@ -44,3 +44,14 @@ class StoreService(ABC):
             key (str): The unique identifier of the value to be deleted.
         """
         pass
+
+
+    @abstractmethod
+    def keys(self) -> list[str]:
+        """
+        Retrieve a list of all keys currently stored.
+
+        Returns:
+            list[str]: A list of keys in the storage.
+        """
+        pass

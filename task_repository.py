@@ -11,13 +11,12 @@ from typing import Any, cast, Optional, List
 from api.mcp_service import MCPClientRegistry
 from api.http_service import HttpClient
 from api.store_service import StoreService
-from task import TaskAdapter, CronTaskAdapter
+from task import TaskAdapter, TaskFactory
 
+
+logger = logging.getLogger(__name__)
 
 TaskExecute = Callable[[StoreService, MCPClientRegistry, HttpClient], str]
-
-
-
 
 
 class CodeRepository:
@@ -144,7 +143,7 @@ class CodeRepository:
             ]
             return sorted(backups, reverse=True)
         except Exception as e:
-            logging.warning(f"Error listing backups: {e}")
+            logger.warning(f"Error listing backups: {e}")
             return []
 
     def backup(self) -> Optional[str]:
@@ -168,27 +167,23 @@ class CodeRepository:
                             zip_file.write(file_path, arcname=file_path.name)
 
             backup_path = str(zip_filepath.resolve())
-            logging.info(f"Backup successfully created at: {backup_path}")
+            logger.info(f"Backup successfully created at: {backup_path}")
             return backup_path
 
         except Exception as e:
-            logging.error(f"Error creating backup: {e}")
+            logger.error(f"Error creating backup: {e}")
             # Clean up the corrupted zip file if it failed halfway through
             zip_filepath.unlink(missing_ok=True)
             return None
 
+
 class TaskRepository:
     """Repository that periodically scans and loads tasks from a CodeRepository."""
 
-    def __init__(self, code_dir: str, store: StoreService):
-        """Initialize scanner with a task registry.
-
-        Args:
-            code_registry: Registry containing registered task code files.
-        """
+    def __init__(self, code_dir: str, task_factory: TaskFactory):
         self.__is_running = False
         self._code_registry = CodeRepository(codedir=code_dir)
-        self._store = store
+        self._task_factory = task_factory
         self.tasks: dict[str, TaskAdapter] = {}
 
     def register(self, name: str, task_code: str, description: str, ttl:int) -> None:
@@ -211,9 +206,9 @@ class TaskRepository:
 
         existing_tasks = self._code_registry.list()
         if existing_tasks:
-            logging.info(f"TaskRegistry started. Registered tasks: {', '.join(existing_tasks)}")
+            logger.info(f"TaskRegistry started. Registered tasks: {', '.join(existing_tasks)}")
         else:
-            logging.info("TaskRegistry started. No registered tasks found.")
+            logger.info("TaskRegistry started. No registered tasks found.")
 
         threading.Thread(target=self._loop, daemon=True).start()
         return self
@@ -230,11 +225,11 @@ class TaskRepository:
             try:
                 self._scan()
             except Exception as e:
-                logging.exception(f"Unexpected error in periodic scan: {e}")
+                logger.exception(f"Unexpected error in periodic scan: {e}")
             try:
                 self._clean_up()
             except Exception as e:
-                logging.exception(f"Unexpected error in periodic clean up: {e}")
+                logger.exception(f"Unexpected error in periodic clean up: {e}")
             sleep(60)
 
     def _scan(self) -> None:
@@ -245,7 +240,7 @@ class TaskRepository:
             try:
                 task_code, task_desc, task_props = self._code_registry.get(task_name)
             except Exception as e:
-                logging.error(f"Failed to retrieve task '{task_name}' from repository: {e}")
+                logger.error(f"Failed to retrieve task '{task_name}' from repository: {e}")
                 continue
 
             # Check if we already have this task loaded and its code hasn't changed
@@ -290,10 +285,10 @@ class TaskRepository:
             typed_cron_getter = cast(Callable[[], str], cron_getter)
             typed_execute = cast(TaskExecute, execute)
 
-            return CronTaskAdapter.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute, self._store)
+            return self._task_factory.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
 
         except Exception as e:
-            logging.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")
+            logger.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")
             return None
 
     def _clean_up(self):
@@ -301,4 +296,4 @@ class TaskRepository:
             if not task.is_still_valid():
                 self._code_registry.deregister(task.name, reason='ttl reached')
                 self._scan()
-                logging.info(f"Task '{task.name}' has expired and was removed from the registry.")
+                logger.info(f"Task '{task.name}' has expired and was removed from the registry.")

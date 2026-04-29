@@ -7,50 +7,62 @@ from mcp.types import CallToolResult
 
 class MCPClient(ABC):
     """
-    A simple wrapper for the MCP (Model Context Protocol) client.
-    It provides a standardized interface to interact with connected MCP servers.
+    Abstract base class providing a standardized interface for Model Context Protocol (MCP) clients.
+
+    This wrapper encapsulates communication with connected MCP servers. Connection
+    lifecycle management is handled internally.
+
+    Note: Client instances are typically dedicated to specific tasks and are not
+    intended to be shared across concurrent executions.
     """
 
     @abstractmethod
     def list_tools(self) -> ListToolsResult:
         """
-        Retrieves a list of all available tools provided by the connected MCP server.
+        Retrieves the manifest of available tools from the connected MCP server.
 
         Returns:
-            ListToolsResult: An object containing the available tools and their schemas.
+            ListToolsResult: An object containing the tool definitions and their
+                             respective JSON Schema specifications.
         """
         pass
 
     @abstractmethod
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> CallToolResult:
         """
-        Executes a specific tool on the connected MCP server.
+        Invokes a functional tool on the remote MCP server.
 
         Args:
-            name (str): The unique identifier/name of the tool to be executed.
-            arguments (dict[str, Any] | None, optional): A dictionary of arguments
-                required by the tool. Defaults to None.
+            name (str): The unique identifier of the tool to execute.
+            arguments (dict[str, Any] | None, optional): Parameters for the tool,
+                matching its defined JSON Schema. Defaults to None.
 
         Returns:
-            CallToolResult: The execution result returned by the MCP server.
+            CallToolResult: The structured response from the server, including
+                            content (text/images) and success status.
         """
         pass
 
 
+
 class MCPClientRegistry(ABC):
     """
-    A service interface for managing and retrieving MCP clients.
+    Registry service for discovery and orchestration of multiple MCP clients.
+
+    Acts as a central access point for retrieving specific client instances
+    by their configured identifiers.
     """
 
     @abstractmethod
     def get(self, name: str) -> Optional[MCPClient]:
         """
-        Retrieves an MCPClient instance by its assigned name.
+        Resolves and returns an MCPClient instance by its registration name.
 
         Args:
-            name (str): The unique name/identifier of the desired MCP client.
+            name (str): The unique identifier of the target MCP client.
 
         Returns:
-            MCPClient: The client instance associated with the given name.
+            Optional[MCPClient]: The requested client instance, or None if
+                                 no client is registered under that name.
         """
         pass

@@ -3,13 +3,14 @@ import sys
 import asyncio
 import logging
 import socket
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict
 from cron import CronService
 from mcp_client import McpRegistry
-from http_client import AutoRecreateHttpClient
+from services import Configs, ServiceConfig, ServiceRegistry
 from store import Store
-from task import TaskAdapter
+from task import TaskAdapter, TaskFactory
 from task_repository import TaskRepository
 from abc import ABC
 from threading import Thread
@@ -17,6 +18,9 @@ from time import sleep
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
+
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -91,17 +95,17 @@ class MCPServer(ABC):
                 server=f"{hostname}.local.",
             )
 
-            logging.info(f"mDNS: Registering {service_name} at {local_ip}:{self.port}")
+            logger.info(f"mDNS: Registering {service_name} at {local_ip}:{self.port}")
             self.zc.register_service(self.service_info)
         except Exception as e:
-            logging.error(
+            logger.error(
                 f"mDNS Registration failed (service will run without discovery): {e}",
                 exc_info=True
             )
 
     def _unregister_mdns(self):
         if self.zc and self.service_info:
-            logging.info("mDNS: Unregistering service...")
+            logger.info("mDNS: Unregistering service...")
             self.zc.unregister_service(self.service_info)
             self.zc.close()
 
@@ -111,7 +115,7 @@ class MCPServer(ABC):
         t = Thread(target=self.__start_loop, args=(self.new_loop,), daemon=True)
         t.start()
         asyncio.run_coroutine_threadsafe(self.__run_async(), self.new_loop)
-        logging.info(f"MCP Server '{self.name}' running on http://0.0.0.0:{self.port}/sse")
+        logger.info(f"MCP Server '{self.name}' running on http://0.0.0.0:{self.port}/sse")
 
     def start_and_wait(self):
         self.start()
@@ -119,14 +123,14 @@ class MCPServer(ABC):
             while True:
                 sleep(1)
         except KeyboardInterrupt:
-            logging.info("Shutdown signal received...")
+            logger.info("Shutdown signal received...")
         finally:
             self.stop()
 
     def stop(self):
         self._unregister_mdns()
         self.new_loop.stop()
-        logging.info("MCP Server stopped")
+        logger.info("MCP Server stopped")
 
 
 class OpenActionServer(MCPServer):
@@ -135,37 +139,33 @@ class OpenActionServer(MCPServer):
     a cron-based scheduling service, and persistent storage.
     """
 
-    def __init__(self, port: int, dir: str, mcp_server: Dict[str, str],autoscan: bool):
-        """
-        Initializes the server and its core components.
-
-        Args:
-            port (int): The port on which the server will listen.
-            dir (str): The base directory path for storing scripts and state.
-        """
+    def __init__(self, port: int, dir: str, configs: Dict[str, ServiceConfig], autoscan: bool):
         # Initialize the parent MCPServer with name and port
         super().__init__("OpenAction", port)
 
-        self.mcp_registry = McpRegistry(mcp_server, autoscan)
-        self.http_client = AutoRecreateHttpClient()
+        self.config = configs
+        self.mcp_registry = McpRegistry(ServiceRegistry(configs, autoscan))
         self.store = Store(name="state", directory=dir)
-        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), self.store).start()
-        self.cron = CronService(self.store, self.mcp_registry, self.task_repository, self.http_client).start()
+        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), TaskFactory(self.store, self.mcp_registry)).start()
+        self.cron = CronService(self.task_repository).start()
 
 
         @self.mcp.tool()
-        def list_service_api() -> str:
-            """Retrieves the complete API of all available service access classes.
+        def list_service_apis() -> str:
+            """
+            Retrieves the Python source code defining all available service client interfaces.
 
-            This tool is essential for understanding the available backend interfaces,
-            method signatures, and data structures. Call this tool when you need to
-            know exactly how to interact with the system's environment or to check
-            which service methods can be used within your generated tasks.
+            CRITICAL: This is your primary discovery tool for writing task logic.
+            It reveals the actual class definitions, method signatures, and docstrings
+            for the clients injected into your 'execute' function.
+
+            Use this tool to:
+            1. Check which methods exist on a specific registry.
+            2. Understand the required arguments and return types for hardware interactions.
+            3. Identify the correct data structures for state persistence.
 
             Returns:
-                str: A formatted string containing the Python source code of all
-                    service access classes, or an error message if the directory
-                    cannot be read.
+                str: Python source code of all available service access classes.
             """
             try:
                 # Resolve the absolute path to the 'api' directory relative to this file
@@ -194,30 +194,47 @@ class OpenActionServer(MCPServer):
 
 
         @self.mcp.tool()
-        def list_provided_mcp_services() -> str:
+        def list_provided_services() -> str:
             """
-            Lists the external MCP services that are currently configured and available to tasks.
+            Lists all external hardware and software services currently available to OpenAction.
+
+            DISCOVERY FLOW:
+            1. Call this tool to see WHAT is connected (e.g., 'hue_lights', 'office_shutter').
+            2. Call 'list_service_client' to see HOW to use the code to talk to them.
+
+            This tool distinguishes between:
+            - MCP [SSE]: Native Model Context Protocol servers. Access via 'mcp_registry.get("name")'.
+            - HTTP [REST]: Standard web services. Access via 'http_client'.
+            - SHELLY: Shelly devices (switches, rollershutters, ...).
 
             Returns:
-                str: A formatted string of available MCP server names and their connection details (e.g., URLs).
+                str: A formatted list of service names, protocols, and endpoints.
             """
             try:
-                if not self.mcp_registry.keys():
-                    return "No external MCP services are currently configured."
-                output = ["Configured MCP Servers:", "========================\n"]
-                for name in self.mcp_registry.keys():
-                    output.append(f"• **{name}**: `{self.mcp_registry[name].url}`")
+                if not hasattr(self, 'config') or not self.config:
+                    return "Environment Empty: No external services are currently configured."
+
+                output = [
+                    "Active Service Environment:",
+                    "===========================\n",
+                    "Use the names below as identifiers in your Python scripts:\n"
+                ]
+
+                for conf in self.config.values():
+                    svc_type = str(conf.type).upper()
+                    output.append(f"• **{conf.name}** [{svc_type}]: `{conf.url}`")
+                    output.append("") # Spacer for readability
 
                 return "\n".join(output)
 
             except Exception as e:
-                logging.error(f"Failed to list provided MCP services: {e}", exc_info=True)
-                return "Error: Could not retrieve MCP service configurations."
+                logger.error(f"Discovery Error: {e}", exc_info=True)
+                return f"Error: Could not map the environment: {type(e).__name__} - {str(e)}"
 
 
         # Expose this function as a callable tool over the Model Context Protocol
         @self.mcp.tool()
-        def register_task(name: str, script: str, description: str, ttl:int = None) -> str:
+        def register_task(name: str, script: str, description: str, is_test: bool, ttl:int = None) -> str:
             """
             Registers a new Python-based task via the MCP interface.
 
@@ -229,62 +246,46 @@ class OpenActionServer(MCPServer):
                     the logic for a specific device (e.g., a single heater or roller
                     shutter) into a single task script rather than creating multiple.
                 description (str): A brief explanation of what the task does.
+                is_test (bool): Flag to distinguish between temporary validation and
+                    permanent deployment.
                 ttl (int, optional): The "Time To Live" in seconds. This is used for
                     test tasks only. Test tasks should always be created with a TTL
                     greater than 900 (15 min) to avoid orphaned processes
 
             Returns:
                 str: A confirmation message indicating the registration status.
-
-            ====================
-            SCRIPT REQUIREMENTS
-            ====================
-            The provided `script` string MUST define the following two functions:
-
-            1. `def cron() -> str:`
-                Defines the execution schedule for the task.
-                Returns:
-                    str: A standard 5-field cron expression (minute, hour, day of month, month, day of week).
-
-            2. `def execute(store_service: StoreService, mcp_registry: MCPClientRegistry, session: HttpSession) -> str:`
-                The callback function executed whenever the task is triggered by the cron schedule.
-                This function contains the core logic of the task.
-
-                Available Environment Tools:
-                    Before implementation, call these tools to map the environment:
-                    - `list_provided_mcp_services()`: To find available MCP client names.
-                    - `list_service_api()`: To retrieve method signatures for the injected registries.
-
-                Injected parameters:
-                    store_service (StoreService): A persistence service for storing state across executions.
-                    mcp_registry (MCPClientRegistry): A registry for accessing configured MCP clients.
-                    http_client (HttpClient): A http client with cached sessions
-
-                Nested Returns:
-                    str: A human-readable summary of the task execution result in a few sentences.
-
-                Mandatory Error Handling:
-                    The script must implement robust error handling. Responses from external clients
-                    and services MUST be explicitly evaluated for error states. If an error occurs,
-                    an Exception MUST be raised. Raising an exception ensures the system will
-                    automatically retry the task 1 minute later.
-
-                Script Validation Protocol:
-                    Before final registration, you MUST validate the script logic and
-                    API calls by registering a temporary test task.
-                    1. Register a test task
-                    2. Validate via the `execute_task_now` tool.
-                    3. Verify all JSON response structures are handled correctly.
-                    4. Delete the test task after validation.
-                    Ensure all JSON response structures are handled correctly before
-                    deploying the final production version.
             """
-            self.task_repository.register(name, script, description, ttl)
-            if ttl is None:
-                logging.info(f"Task '{name}' registered successfully.")
+
+            if is_test:
+                # Rule 1: Test tasks must start with 'test_'
+                if not name.startswith("test_"):
+                    return f"Error: Validation failed. Test task names must start with 'test_'. Received: '{name}'"
+
+                # Rule 2: Test tasks must have a TTL
+                if ttl is None:
+                    return "Error: Validation failed. Test tasks (is_test=True) must include a 'ttl' value."
+
+                # Rule 3: Minimum TTL of 900 seconds (15 minutes)
+                if ttl < 900:
+                    return f"Error: Validation failed. Test task 'ttl' must be at least 900 seconds to prevent orphaned processes. Received: {ttl}"
             else:
-                logging.info(f"Task '{name}' registered successfully. ttl={ttl}")
-            return f"Task '{name}' has been successfully registered."
+                # Rule 4: Production tasks should not start with 'test_' to avoid confusion
+                if name.startswith("test_"):
+                    return f"Error: Validation failed. Production tasks (is_test=False) should not start with 'test_'."
+
+            try:
+                self.task_repository.register(name, script, description, ttl)
+
+                if ttl is None:
+                    logger.info(f"Production Task '{name}' registered successfully.")
+                    return f"Task '{name}' has been successfully registered as a persistent production task."
+                else:
+                    logger.info(f"Test Task '{name}' registered successfully with ttl={ttl}s.")
+                    return f"Test task '{name}' has been successfully registered and will be removed in {ttl} seconds."
+
+            except Exception as e:
+                logger.error(f"Failed to register task '{name}': {e}", exc_info=True)
+                return f"Error: An internal error occurred during registration: {type(e).__name__} - {str(e)}"
 
 
         # Expose this function as a callable tool over the Model Context Protocol
@@ -292,12 +293,6 @@ class OpenActionServer(MCPServer):
         def deregister_task(name: str, reason: str) -> str:
             """
             Deregisters and removes a previously registered task.
-
-            Args:
-                name (str): The unique name of the task to remove.
-
-            Returns:
-                str: A confirmation message indicating the operation's result.
             """
             try:
                 # Check if the task exists in the active registry
@@ -306,30 +301,95 @@ class OpenActionServer(MCPServer):
 
                 self.task_repository.deregister(name, reason)
 
-                logging.info(f"Task '{name}' unregistered successfully.")
+                logger.info(f"Task '{name}' unregistered successfully.")
                 return f"Task '{name}' has been successfully unregistered."
 
             except Exception as e:
-                logging.error(f"Failed to unregister task '{name}': {e}", exc_info=True)
+                logger.error(f"Failed to unregister task '{name}': {e}", exc_info=True)
                 return f"Error: Failed to unregister task '{name}': {str(e)}"
+
+
+        @self.mcp.tool()
+        def list_tasks() -> str:
+            """
+            Retrieves a concise list of all registered tasks.
+            """
+            try:
+                # Pythonic check for empty dictionary
+                if not self.task_repository.tasks:
+                    return "Currently, no tasks are registered."
+
+                output = ["### Registered Tasks", "=================\n"]
+
+                # Iterate over tasks and extract only name and description
+                for task in self.task_repository.tasks.values():
+                    output.append(f"• **{task.name}** [{task.state}]: {task.description}")
+
+                return "\n".join(output)
+
+            except Exception as e:
+                logger.error(f"Failed to list tasks: {e}", exc_info=True)
+                return "Error: Could not retrieve tasks from the registry. Check server logs."
+
+        @self.mcp.tool()
+        def get_task(name: str) -> str:
+            """
+            Retrieves detailed information and status for a specific task.
+            """
+            try:
+                # Use .get() to avoid redundant dictionary lookups
+                task = self.task_repository.tasks.get(name)
+
+                if not task:
+                    return f"Error: Task '{name}' is not currently registered."
+
+                # Updated headers to reflect a single task rather than a list
+                output = [f"### Task Overview: {task.name}", "=================\n"]
+                output.append(f"**Description:** {task.description}\n")
+
+                output.append(f"**State:** {task.state}\n")
+
+                # Handle stored task state
+                task_data = task.data()
+                if task_data:
+                    output.append("**Stored Data:**")
+                    for k, v in task_data.items():
+                        v_str = str(v)
+                        if len(v_str) > 200:
+                            v_str = v_str[:197] + "..."
+                        output.append(f"  - `{k}`: `{v_str}`")
+                    output.append("") # Spacing for readability
+
+                # Handle execution history (Pythonic check for empty lists)
+                if not task.last_executions:
+                    output.append("**Last Results:** Never executed\n")
+                else:
+                    output.append("**Last Results:**")
+                    for run in reversed(task.last_executions):
+                        timestamp = "n/a" if run.date is None else run.date.isoformat()
+                        result_text = run.result if run.error is None else f"ERROR: {run.error}"
+
+                        if len(result_text) > 600:
+                            result_text = result_text[:597] + "..."
+                        output.append(f"  - `{timestamp}`: {result_text}")
+                    output.append("") # Spacing for readability
+
+                output.append("**Source Code:**")
+                output.append(f"```python\n{task.code}\n```")
+                output.append("---\n")
+
+                return "\n".join(output)
+
+            except Exception as e:
+                # Fixed copy-paste error in the log and return message
+                logger.error(f"Failed to retrieve task '{name}': {e}", exc_info=True)
+                return f"Error: Could not retrieve task '{name}'. Check server logs."
 
 
         @self.mcp.tool()
         def execute_task_now(name: str) -> str:
             """
             Triggers the immediate manual execution of a registered Python task.
-
-            This tool bypasses the defined cron schedule for testing or urgent
-            operational needs.
-
-            Args:
-                name (str): The unique identifier of the task to be executed.
-
-            Returns:
-                str: A report containing the execution status, a timestamp, and the
-                     actual return value from the executed script's logic.
-                     Returns an error message if the task is not found or if the
-                     execution encounters a runtime exception
             """
             try:
                 # Find the task by name in the registry
@@ -345,20 +405,20 @@ class OpenActionServer(MCPServer):
                     return f"Error: Task '{name}' not found in registry. Available tasks: {[t.name for t in self.task_repository.tasks.values() if hasattr(t, 'name')]}"
 
                 # Execute the task immediately and capture the result
-                result = task_to_execute.run(self.store, self.mcp_registry, self.http_client)
+                result = task_to_execute.run()
 
 
-                logging.info(f"Task '{name}' executed now")
+                logger.info( f"Task '{name}' executed \nResult: {result}")
 
                 # Format execution timestamp if available
                 timestamp = getattr(task_to_execute, 'last_execution', None)
                 if timestamp:
-                    return f"Task '{name}' executed successfully at {timestamp.isoformat()}.\nResult: {result}"
+                    return f"Task '{name}' executed at {timestamp.isoformat()}.\nResult: {result}"
                 else:
-                    return f"Task '{name}' executed successfully.\nResult: {result}"
+                    return f"Task '{name}' executed \nResult: {result}"
 
             except Exception as e:
-                logging.error(f"Failed to execute task '{name}': {e}", exc_info=True)
+                logger.error(f"Failed to execute task '{name}': {e}", exc_info=True)
                 return f"Error: Failed to execute task '{name}': {str(e)}"
 
 
@@ -366,10 +426,6 @@ class OpenActionServer(MCPServer):
         def run_backup() -> str:
             """
             Creates a backup of all registered task scripts and descriptions.
-
-            Returns:
-                str: A confirmation message containing the absolute path to the backup file,
-                     or an error message if the backup failed.
             """
             try:
                 # Call the backup method we implemented in the CodeRegistry
@@ -381,7 +437,7 @@ class OpenActionServer(MCPServer):
                     return "Error: Backup process failed. Please check the server logs for details."
 
             except Exception as e:
-                logging.error(f"Failed to execute backup_tasks tool: {e}", exc_info=True)
+                logger.error(f"Failed to execute backup_tasks tool: {e}", exc_info=True)
                 return f"Error: Failed to create backup: {str(e)}"
 
 
@@ -389,10 +445,6 @@ class OpenActionServer(MCPServer):
         def list_backups() -> str:
             """
             Lists all existing backup files of registered tasks.
-
-            Returns:
-                str: A formatted string containing all available backup filenames,
-                     sorted with newest first, or a message if no backups exist.
             """
             try:
                 backups = self.task_repository.list_backup()
@@ -407,114 +459,107 @@ class OpenActionServer(MCPServer):
                 return "\n".join(output)
 
             except Exception as e:
-                logging.error(f"Failed to list backups: {e}", exc_info=True)
+                logger.error(f"Failed to list backups: {e}", exc_info=True)
                 return f"Error: Could not retrieve backup list: {str(e)}"
 
-        @self.mcp.tool()
-        def list_tasks() -> str:
-            """
-            Retrieves a comprehensive overview of all registered tasks.
 
-            Returns:
-                str: A formatted report including task names, descriptions,
-                     source code, persisted state (store_service data),
-                     and the most recent execution results.
+        @self.mcp.tool()
+        def get_task_health() -> str:
+            """
+            Provides a high-level health status of all tasks, focusing on failures and stalls.
             """
             try:
-                if len(self.task_repository.tasks) == 0:
-                    return "Currently, no tasks are registered."
+                tasks = self.task_repository.tasks.values()
+                if not tasks:
+                    return "Health Check: OK. No tasks registered."
 
-                output = ["Registered Tasks:", "=================\n"]
+                critical_failures = []
+                warnings = []
+                healthy_count = 0
+                now = datetime.now()
 
-                for task in self.task_repository.tasks.values():
-                    output.append(f"• **{task.name}**: {task.description}")
+                for task in tasks:
+                    # Case 1: Task has execution history
+                    if task.last_executions:
+                        last_run = task.last_executions[-1]
 
-                    task_data = task.data()
-                    if task_data:
-                        output.append("  Stored data:")
-                        for k, v in task_data.items():
-                            v_str = str(v)
-                            if len(v_str) > 200:
-                                v_str = v_str[:197] + "..."
-                            output.append(f"    - `{k}`: `{v_str}`")
+                        # Check for Exceptions
+                        if last_run.error:
+                            error_msg = str(last_run.error)
+                            critical_failures.append(
+                                f"❌ **{task.name}**: Failed at {last_run.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                f"   Reason: `{error_msg[:200]}`"
+                            )
+                            continue
 
-                    if len(task.last_executions) == 0:
-                        output.append("  Last results: never")
+                        # Check for "Stale" tasks (Heuristic: No run for > 24h)
+                        # Note: In a production version, you'd compare against the actual cron interval.
+                        if now - last_run.date > timedelta(hours=24):
+                            warnings.append(f"⏳ **{task.name}**: Stale? Last successful run was over 24h ago.")
+                            continue
+
+                    # Case 2: Task has never run
                     else:
-                        output.append("  Last results:")
-                        for run in reversed(task.last_executions):
-                            timestamp = "n/a" if run.date is None else run.date.isoformat()
-                            result_text = run.result if run.error is None else str(run.error)
-                            if len(result_text) > 600:
-                                result_text = result_text[:597] + "..."
-                            output.append(f"    - `{timestamp}`: `{result_text}`")
+                        warnings.append(f"⚠️ **{task.name}**: Registered but has NEVER executed.")
+                        continue
 
-                    output.append("  Code:")
-                    output.append(f"```python\n{task.code}\n```")
-                    output.append("-------------------\n")
+                    healthy_count += 1
 
-                return "\n".join(output)
+                # Build the report
+                report = ["### OpenAction System Health", "==========================\n"]
+
+                if critical_failures:
+                    report.append("#### 🚨 CRITICAL FAILURES")
+                    report.extend(critical_failures)
+                    report.append("")
+
+                if warnings:
+                    report.append("#### ⚠️ WARNINGS / OBSERVATIONS")
+                    report.extend(warnings)
+                    report.append("")
+
+                report.append(f"**Summary:** {healthy_count} of {len(tasks)} tasks are currently healthy.")
+
+                if not critical_failures and not warnings:
+                    return "✅ All tasks are healthy and running as scheduled."
+
+                return "\n".join(report)
 
             except Exception as e:
-                logging.error(f"Failed to list tasks: {e}", exc_info=True)
-                return "Error: Could not retrieve tasks from the registry. Check server logs."
+                logger.error(f"Health check failed: {e}", exc_info=True)
+                return f"Error: Failed to perform health check: {type(e).__name__} - {str(e)}"
 
 
 
-def run_server(port: int, dir, mcp_server_uris: Dict[str, str], autoscan: bool):
-    mcp_server = OpenActionServer(port, dir, mcp_server_uris, autoscan)
+def run_server(port: int, dir, configs: Dict[str, ServiceConfig], autoscan: bool):
+    mcp_server = OpenActionServer(port, dir, configs, autoscan)
     try:
         mcp_server.start()
         while True:
             sleep(5)
     except KeyboardInterrupt:
-        logging.info('Stopping the server...')
+        logger.info('Stopping the server...')
         mcp_server.stop()
 
 
 
-def read_config(mcp_servers: str) -> Dict[str, str]:
-    """
-    Parses a configuration string into a dictionary.
-    Example: "rolladen=http://22.322/zt&licht=http://33.5" -> {"rollershutter": "http://...", "light": "..."}
-    """
-    config = {}
-
-    if not mcp_servers:
-        return config
-
-    # Split by '&' to get the individual server definitions
-    pairs = mcp_servers.split('&')
-
-    for pair in pairs:
-        # Ignore empty segments (e.g., if "&&" is accidentally in the string)
-        if not pair.strip():
-            continue
-
-        # Split only on the FIRST '=' in case the URL itself contains an '='
-        parts = pair.split('=', 1)
-
-        if len(parts) == 2:
-            name = parts[0].strip()
-            url = parts[1].strip()
-            config[name] = url
-        else:
-            logging.warning(f"Ignoring invalid configuration entry: '{pair}' of '{mcp_servers}'")
-
-    return config
-
-
 if __name__ == '__main__':
+    # Globally setup format and log level for the application root
     logging.basicConfig(format='%(asctime)s %(name)-20s: %(levelname)-8s %(message)s', level=logging.INFO, datefmt='%Y-%m-%d %H:%M:%S')
+
+    # Silence chatty third-party modules
     logging.getLogger('tornado.access').setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
     logging.getLogger('starlette.middleware.base').setLevel(logging.WARNING)
     logging.getLogger('fastmcp').setLevel(logging.WARNING)
+    logging.getLogger('uvicorn.access').disabled = True
+    logging.getLogger('uvicorn.error').setLevel(logging.WARNING)
+    logging.getLogger('uvicorn').setLevel(logging.WARNING)
 
     port = int(sys.argv[1])
     work_dir = sys.argv[2]
-    mcp_config = sys.argv[3]
+    config = Configs.read(sys.argv[3])
     autoscan = sys.argv[4].upper() == 'ON'
 
-    run_server(port, work_dir, read_config(mcp_config), autoscan)
+    run_server(port, work_dir, config, autoscan)

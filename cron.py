@@ -5,46 +5,43 @@ from threading import Thread
 from time import sleep
 from typing import Dict
 
-from api.http_service import HttpClient
-from mcp_client import McpRegistry
-from store import Store
-from task import CronTaskAdapter
+from task import CronTaskAdapter, TaskFactory
+from task_repository import TaskRepository
 
+
+logger = logging.getLogger(__name__)
 
 
 class CronService:
 
-    def __init__(self, store: Store, mcp_registry: McpRegistry, task_registry : TaskRegistry, http_session: HttpClient):
-        self.is_running = False
-        self.store = store
-        self.mcp_registry = mcp_registry
-        self.http_session = http_session
-        self.task_registry = task_registry
+    def __init__(self, task_repository : TaskRepository):
+        self._is_running = False
+        self._task_repository = task_repository
         self._cron_cache: Dict[str, set[int]] = {}
         self._executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="CronWorker")
 
     def __str__(self):
-        return f"CronService(jobs={len(self.task_registry.tasks)})\n\r" + "\n\r".join([" * " + str(task) for task in self.task_registry.tasks])
+        return f"CronService(jobs={len(self._task_repository.tasks)})\n\r" + "\n\r".join([" * " + str(task) for task in self._task_repository.tasks])
 
     def stop(self):
-        self.is_running = False
+        self._is_running = False
         return self
 
     def start(self):
-        self.is_running = True
+        self._is_running = True
         Thread(target=self.__loop, daemon=True).start()
 
     def __loop(self):
-        while self.is_running:
+        while self._is_running:
             now = datetime.now()
             run_key = (now.year, now.month, now.day, now.hour, now.minute)
 
-            for task in list(self.task_registry.tasks.values()):
+            for task in list(self._task_repository.tasks.values()):
                 try:
                     if self._should_run(task, now, run_key):
                         self._executor.submit(self._safe_run, task)
                 except Exception:
-                    logging.exception(f"Error triggering task: {task.name}")
+                    logger.exception(f"Error triggering task: {task.name}")
 
             next_tick = (datetime.now() + timedelta(seconds=1)).replace(microsecond=0)
             sleep_time = (next_tick - datetime.now()).total_seconds()
@@ -53,19 +50,19 @@ class CronService:
     def _safe_run(self, task: CronTaskAdapter):
         """Executes the task and ensures any unhandled exceptions are logged."""
         try:
-            task.run(self.store, self.mcp_registry, self.http_session)
+            task.run()
         except Exception as e:
-            logging.error(f"Execution failed for task '{task.name}': {e}")
+            logger.error(f"Execution failed for task '{task.name}': {e}")
 
     def _should_run(self, task: CronTaskAdapter, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
         # If task failed recently, wait 1 minute before retrying
-        time_since_error = task.time_since_last_error()
+        time_since_error = task.last_failure_age()
         if time_since_error is not None:
             if time_since_error < timedelta(minutes=1):
                 return False
 
         # Check if already run in this minute or if cron expression matches
-        last_run = task.time_last_run()
+        last_run = task.last_attempt_at()
         if last_run is not None:
             if (last_run.year, last_run.month, last_run.day, last_run.hour, last_run.minute) == run_key:
                 return False
@@ -101,7 +98,7 @@ class CronService:
                     and self._matches_field(weekday, cron_weekday, 0, 7, "w")
             )
         except ValueError:
-            logging.error(f"Invalid cron expression encountered: {expression}")
+            logger.error(f"Invalid cron expression encountered: {expression}")
             return False
 
     def _matches_field(self, field: str, value: int, minimum: int, maximum: int, cache_key_part: str) -> bool:
