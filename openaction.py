@@ -276,7 +276,7 @@ class OpenActionServer(MCPServer):
                 The callback function executed whenever the task is triggered by the cron schedule.
                 This function contains the core logic of the task.
                 Returns:
-                    A human-readable textual summary of the execution result in a few sentences.
+                     A human-readable summary of the task execution result in a few sentences.
 
                 Available Environment Tools:
                     Before implementation, call these tools to map the environment:
@@ -288,25 +288,21 @@ class OpenActionServer(MCPServer):
                     mcp_registry (MCPClientRegistry): A registry for accessing configured MCP clients.
                     http_client (HttpClient): A http client with cached sessions
 
-                Nested Returns:
-                    str: A human-readable summary of the task execution result in a few sentences.
-
                 Mandatory Error Handling:
                     The script must implement robust error handling. Responses from external clients
                     and services MUST be explicitly evaluated for error states. If an error occurs,
                     an Exception MUST be raised. Raising an exception ensures the system will
                     automatically retry the task 1 minute later.
 
-                API Validation Protocol:
-                    When integrating new MCP services, validate the API calls by registering a
-                    temporary test task first. Ensure response structures are correctly handled
-                    before final registration.
-
-                Script Validation Protocol:
-                    Before final registration, you MUST validate the script logic and
-                    API calls by registering a temporary test task. Test tasks must be deleted
-                    after validation. Ensure all JSON response structures are handled correctly
-                    before deploying the final production version.
+                Validation & Consolidation Protocol (Mandatory):
+                    Before final deployment, you MUST adhere to the following workflow:
+                    1. Check Existing: Verify no script already exists managing the same device.
+                       If one exists, MERGE your logic into the existing task.
+                    2. Test First: Register a temporary test task (is_test=True).
+                    3. Naming: The test task name MUST start with 'test_' and include a `ttl`.
+                    4. Verify: Trigger execution manually via the `execute_task_now` tool and
+                       ensure all JSON response structures are correctly handled.
+                    5. Cleanup: Delete the test task after validation.
             """
 
             if is_test:
