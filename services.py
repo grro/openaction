@@ -53,12 +53,13 @@ class ServiceRegistry:
 
     def __init__(self, configs: Dict[str, ServiceConfig], autoscan: bool):
         self._is_running = True
-        self.autoscan = autoscan
-        self.registered_services = {name: config for name, config in configs.items()}
-        self.reachable_services = set()
         self._listeners = set()
-
-        logger.info(f"ServiceRegistry initialized. Autoscan is {'ON' if autoscan else 'OFF'}.")
+        self.autoscan = autoscan
+        self.reachable_services = set()
+        self.registered_services = {name: config for name, config in configs.items()}
+        logger.info(f"ServiceRegistry initialized. Autoscan is {'ON' if autoscan else 'OFF'}, {len(self.registered_services)} manually configured services.")
+        for name, config in self.registered_services.items():
+            logger.info(f"  - {name} [{config.type}]: {config.url}")
 
         Thread(target=self.__loop, daemon=True).start()
 
@@ -78,6 +79,7 @@ class ServiceRegistry:
         self._is_running = False
 
     def __loop(self):
+        logger.info("start scanning for services and connectivity ...")
         self._is_running = True
         while self._is_running:
             updates = False
@@ -94,7 +96,7 @@ class ServiceRegistry:
         discovered = MDNSScanner().scan()
         for name, conf in discovered.items():
             if name not in self.registered_services and name.upper() != 'OPENACTION':
-                logger.info(f"🔍 Auto-discovered new service: '{name}' [{conf.type}] at {conf.url}")
+                logger.info(f"Auto-discovered service: '{name}' [{conf.type}] at {conf.url}")
                 self.registered_services[name] = conf
                 updates = True
         return updates
@@ -104,12 +106,12 @@ class ServiceRegistry:
         for name, config in list(self.registered_services.items()):
             if self._is_reachable(config.url):
                 if name not in self.reachable_services:
-                    logger.info(f"🟢 Service '{name}' is now ONLINE and reachable.")
+                    logger.info(f"🟢 Service '{name}' [{config.type}] is ONLINE and reachable.")
                     self.reachable_services.add(name)
                     updates = True
             else:
                 if name in self.reachable_services:
-                    logger.warning(f"🔴 Service '{name}' is now OFFLINE (unreachable).")
+                    logger.warning(f"🔴 Service '{name}' [{config.type}] is OFFLINE (unreachable).")
                     self.reachable_services.discard(name)
                     updates = True
         return updates

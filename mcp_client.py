@@ -109,6 +109,6 @@ class McpRegistry(MCPClientRegistry):
                 if name not in self._mcp.keys():
                     try:
                         self._mcp[name] = SyncMCPClient(conf.url)
-                        logger.info(f"{'auto scanned' if conf.auto_scanned else 'manually '} configured MCP server '{name}' added")
+                        logger.debug(f"{'auto scanned' if conf.auto_scanned else 'manually'} configured MCP server '{name}' added")
                     except Exception as e:
                         logger.warning(f"Error adding MCP server '{name}': {e}")
