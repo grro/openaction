@@ -347,6 +347,9 @@ class OpenActionServer(MCPServer):
                 # Execute the task immediately and capture the result
                 result = task_to_execute.run(self.store, self.mcp_registry, self.http_client)
 
+
+                logging.info(f"Task '{name}' executed now")
+
                 # Format execution timestamp if available
                 timestamp = getattr(task_to_execute, 'last_execution', None)
                 if timestamp:

@@ -1,5 +1,9 @@
+import concurrent
+import logging
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -47,6 +51,9 @@ class TaskAdapter(ABC):
         self.__meth_to_execute = meth_to_execute
         self.last_executions: List[TaskResult] = list()
         self.scoped_store = ScopedStore(store, self.name)
+        self.default_timeout_sec = 30
+        self._execution_lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"Task-{self.name}")
 
     def data(self) -> Dict[str, str]:
         return {key: self.scoped_store.get(key) for key in self.scoped_store.keys()}
@@ -72,17 +79,35 @@ class TaskAdapter(ABC):
     def run(self, store_service: StoreService, mcp_registry: MCPClientRegistry, http_client: HttpClient) -> str:
         """Execute the task function with the given store and MCP context."""
 
+        if not self._execution_lock.acquire(blocking=False):
+            msg = f"Task '{self.name}' is already running. Skipping this execution cycle."
+            logging.warning(msg)
+            return msg
+
+        # Timeout aus den Props lesen, falls die KI einen spezifischen Wert gesetzt hat
+        timeout_sec = self.props.get("timeout", self.default_timeout_sec)
+
         try:
-            result = self.__meth_to_execute(self.scoped_store, mcp_registry, http_client)
+            future = self._executor.submit(self.__meth_to_execute,self.scoped_store, mcp_registry, http_client)
+            result = future.result(timeout=timeout_sec)
             self.last_executions.append(TaskResult(datetime.now(), result, None))
             return result
+        except concurrent.futures.TimeoutError:
+            # Spezielle Behandlung für Zeitüberschreitungen
+            error_msg = f"Task '{self.name}' timed out after {timeout_sec} seconds."
+            self.last_executions.append(TaskResult(datetime.now(), None, Exception(error_msg)))
+            logging.error(error_msg)
+            return error_msg
         except Exception as e:
             self.last_executions.append(TaskResult(datetime.now(), None, e))
             raise e
         finally:
+            self._execution_lock.release()
             if len(self.last_executions) > 10:
                 del self.last_executions[0]
 
+    def __del__(self):
+        self._executor.shutdown(wait=False)
 
 
 class CronTaskAdapter(TaskAdapter):
