@@ -17,8 +17,8 @@
 The system is based on a decentralized architecture connected via the Model Context Protocol (MCP):
 
 1. **The Request:** The user describes an automation in a chat with the AI (e.g., Claude Desktop).
-2. **The Translation:** The AI analyzes the prompt, writes a Python script (including a cron rule and an execute function), and uses tools of the **OpenAction MCP Server** to store the script in the system.
-3. **The Scheduling:** OpenAction's local services monitor the schedules and trigger the tasks at the specified times.
-4. **The Execution:** During execution, the script calls the corresponding endpoints of the connected hardware MCP servers (e.g., switching lights, reading temperatures) via the `McpRegistry`.
+2. **The Translation:** The AI analyzes the prompt, writes a Python script, and uses tools of the **OpenAction MCP Server** to store the script in the system.
+3. **The Scheduling:** OpenAction's local services monitor the schedules and trigger the tasks at the specified times and events.
+4. **The Execution:** During execution, the script calls the corresponding endpoints of the connected devices such as switching lights, reading temperatures
 
 ---
