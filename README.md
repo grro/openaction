@@ -25,3 +25,5 @@ The system acts as a bridge between high-level reasoning (LLMs) and low-level ha
 4.  **The Execution:** When triggered, the script runs in a local sandbox, calling the endpoints of connected **Sensors & Actuators**.
 
 ---
+
+![overview.png](overview.png)
