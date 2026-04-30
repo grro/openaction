@@ -138,7 +138,7 @@ class TaskAdapter(ABC):
             error_msg = f"Task '{self.name}' timed out after {timeout_sec} seconds."
             elapsed = datetime.now() - start
             self.last_executions.append(TaskResult(datetime.now(), None, Exception(error_msg), elapsed))
-            logger.error(f"Execution failed (TimeoutError) for task '{self.name}': {str(te)}")
+            logger.error(f"Execution failed (TimeoutError; timeout {timeout_sec} seconds) for task '{self.name}': {str(te)}")
             return error_msg
 
         except Exception as e:

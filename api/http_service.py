@@ -5,8 +5,9 @@ from requests import Response
 
 class HttpClient(ABC):
     """
-    Defines a standardized interface for HTTP clients, commonly used to access
-    REST APIs or HTTP-based hardware like Shelly devices.
+    The HTTP client supports local serives like Shelly devices and external
+    services. Please ensure compliance with terms of use and privacy policies
+    for external requests.
 
     This wrapper encapsulates communication with remote servers while managing
     the connection lifecycle internally (e.g., session handling and pooling).

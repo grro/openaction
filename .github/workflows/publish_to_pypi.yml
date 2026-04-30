@@ -1,0 +1,33 @@
+name: Python publish
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers only when you push a tag starting with 'v'
+
+jobs:
+  build-n-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build binary wheels and source tarball
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # If using Trusted Publishers, you don't need the password line.
+          # Otherwise, keep your secret here:
+          password: ${{ secrets.PYPI_API_TOKEN }}
