@@ -1,24 +1,27 @@
 # OpenAction
 
-**OpenAction** is an AI-driven framework for smart home automation. It replaces static, manually created rules with dynamic scripts generated and managed by an Artificial Intelligence (LLM) based on natural language.
+**OpenAction** is an AI-native framework for smart home automation that replaces static, If-This-Then-That" rules 
+with dynamic Python scripts. By leveraging the **Model Context Protocol (MCP)**, it allows users to orchestrate their 
+home through natural language, turning intent into executable logic.
+
+---
 
 ## Core Features
 
-* **Natural Language Automation:** Create complex smart home automations through simple chat dialogues with an LLM (such as Claude).
-* **Sensors & Actuators:** All hardware devices provide their interfaces as independent MCP services.
-* **OpenAction Interface:** The framework itself acts as an MCP server. The AI uses provided tools to create and manage automations within the system.
-* **Dynamic Scheduling:** An integrated Cron service ensures the precise execution of AI-generated scripts.
-* **Persistent State:** Tasks have access to a persistent `Store` to save states across multiple executions.
+*   **️ Natural Language Automation:** Define complex home behaviors via chat. No more wrestling with nested "If-Then" menus or YAML configurations.
+*   ** Stateful Intelligence:** An integrated `Store` provides persistence, allowing scripts to save and retrieve data across multiple executions.
+*   ** Dynamic Scheduling:** A built-in Cron service triggers AI-generated scripts based on time, sensor events, or external API data.
+*   ** Python Execution:** The AI generates standard Python code, enabling complex calculations, loops, and sophisticated error handling.
 
 ---
 
 ## Architecture & Workflow
 
-The system is based on a decentralized architecture connected via the Model Context Protocol (MCP):
+The system acts as a bridge between high-level reasoning (LLMs) and low-level hardware control:
 
-1. **The Request:** The user describes an automation in a chat with the AI (e.g., Claude Desktop).
-2. **The Translation:** The AI analyzes the prompt, writes a Python script, and uses tools of the **OpenAction MCP Server** to store the script in the system.
-3. **The Scheduling:** OpenAction's local services monitor the schedules and trigger the tasks at the specified times and events.
-4. **The Execution:** During execution, the script calls the corresponding endpoints of the connected devices such as switching lights, reading temperatures
+1.  **The Intent:** The user describes a goal to an MCP-capable client (e.g., Claude Desktop): *"If it's raining and the windows are open, notify me and close them."*
+2.  **The Translation:** The LLM uses the **OpenAction MCP Server** tools to inspect available devices and writes a custom Python script.
+3.  **The Registration:** OpenAction stores the script and sets up the necessary triggers (e.g., polling a weather API or listening for a sensor change).
+4.  **The Execution:** When triggered, the script runs in a local sandbox, calling the endpoints of connected **Sensors & Actuators**.
 
 ---
