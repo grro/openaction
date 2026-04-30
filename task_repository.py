@@ -193,6 +193,9 @@ class TaskRepository:
             raise ValueError(f"Failed to register task '{name}': Please check your script syntax, required functions, and logs. It was rejected by the registry.")
 
     def deregister(self, name: str, reason: str) -> None:
+        task = self.tasks.get(name, None)
+        if task is not None:
+            task.reset()
         self._code_registry.deregister(name, reason)
         self._scan()
 
@@ -235,31 +238,26 @@ class TaskRepository:
             sleep(60)
 
     def _scan(self) -> None:
-        """Scan registry for registered tasks and load source-code task functions."""
         current_tasks: dict[str, TaskAdapter] = {}
-
         for task_name in self._code_registry.list():
             try:
                 task_code, task_desc, task_props = self._code_registry.get(task_name)
             except Exception as e:
                 logger.error(f"Failed to retrieve task '{task_name}' from repository: {e}")
                 continue
-
-            # Check if we already have this task loaded and its code hasn't changed
-            existing_task = self.tasks.get(task_name)
-            if existing_task and existing_task.code == task_code:
-                # Keep the existing task to avoid memory leaks and unneeded execution
-                current_tasks[task_name] = existing_task
-                continue
-
-            # Load or reload the task via exec()
             task = self._load_task(task_name, task_code, task_desc, task_props)
-            if task:
+            if task is not None:
                 current_tasks[task_name] = task
 
-        # Update the tasks dictionary (this also naturally drops tasks that were deleted from the repository)
+        old_tasks = self.tasks
         self.tasks = current_tasks
+        added_tasks = set(current_tasks.keys()) - set(old_tasks.keys())
+        removed_tasks = set(old_tasks.keys()) - set(current_tasks.keys())
 
+        for name in added_tasks:
+            logger.info(f"Task '{name}' was added to the registry.")
+        for name in removed_tasks:
+            logger.info(f"Task '{name}' was removed from the registry.")
 
     def _load_task(self, task_name: str, task_code: str, task_description: str, task_props: dict[str, Any]) -> TaskAdapter | None:
         """Load and instantiate a task from raw code strings.

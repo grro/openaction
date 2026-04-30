@@ -77,6 +77,11 @@ class TaskAdapter(ABC):
         """Returns the current persistent state stored for this specific task."""
         return {key: self._scoped_store.get(key) for key in self._scoped_store.keys()}
 
+    def reset(self) -> None:
+        """Clears all persistent state for this task."""
+        for key in self._scoped_store.keys():
+            self._scoped_store.delete(key)
+
     def is_still_valid(self) -> bool:
         """Checks if the task's TTL has expired based on the 'valid_to' property."""
         if "valid_to" in self.props:
@@ -128,19 +133,19 @@ class TaskAdapter(ABC):
             self.last_executions.append(TaskResult(datetime.now(), result, None, elapsed))
             return result
 
-        except concurrent.futures.TimeoutError:
+        except concurrent.futures.TimeoutError as te:
             # Handle cases where the script hangs or takes too long
             error_msg = f"Task '{self.name}' timed out after {timeout_sec} seconds."
             elapsed = datetime.now() - start
             self.last_executions.append(TaskResult(datetime.now(), None, Exception(error_msg), elapsed))
-            logger.error(f"Execution failed (TimeoutError) for task '{self.name}': {e}")
+            logger.error(f"Execution failed (TimeoutError) for task '{self.name}': {str(te)}")
             return error_msg
 
         except Exception as e:
             # Log the crash and re-raise to allow the scheduler to handle the failure
             elapsed = datetime.now() - start
             self.last_executions.append(TaskResult(datetime.now(), None, e, elapsed))
-            logger.error(f"Execution failed for task '{self.name}': {e}")
+            logger.error(f"Execution failed for task '{self.name}': {str(e)}")
 
         finally:
             self.state = self.IDLING

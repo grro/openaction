@@ -3,13 +3,15 @@ from typing import Any
 
 class StoreService(ABC):
     """
-    Abstract base class defining the contract for a key-value storage service.
+    Key-value storage service.
     """
 
     @abstractmethod
     def put(self, key: str, value: str, ttl_sec: int | None = None) -> None:
         """
-        Store a value in the storage with the specified key.
+        Store a value in the storage with the specified key. The amount of stored data
+        should not exceed 4 KB. All entries must be deleted. No data should be left behind.
+        The data is stored individually for each task.
 
         Args:
             key (str): The unique identifier for the stored value.

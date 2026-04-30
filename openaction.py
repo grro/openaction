@@ -274,9 +274,11 @@ class OpenActionServer(MCPServer):
 
             2. `def execute(store_service, mcp_registry, http_client):`
                 The callback function executed whenever the task is triggered by the cron schedule.
-                This function contains the core logic of the task.
+                This function contains the core logic of the task. Environment clients will be
+                injected for each task individually within a dedicated namespace.
                 Returns:
-                     A human-readable summary of the task execution result in a few sentences.
+                    A human-readable summary of the task execution result and the
+                    updated device state, if applicable  (in a few sentences).
 
                 Available Environment Tools:
                     Before implementation, call these tools to map the environment:

@@ -95,7 +95,9 @@ class ServiceRegistry:
         updates = False
         discovered = MDNSScanner().scan()
         for name, conf in discovered.items():
-            if name not in self.registered_services and name.upper() != 'OPENACTION':
+            if name.upper() == 'OPENACTION':
+                continue
+            if name not in self.registered_services:
                 logger.info(f"Auto-discovered service: '{name}' [{conf.type}] at {conf.url}")
                 self.registered_services[name] = conf
                 updates = True
