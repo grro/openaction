@@ -1,6 +1,6 @@
 # OpenAction
 
-**OpenAction** is an innovative, AI-driven framework for smart home automation. It replaces static, manually created rules with dynamic scripts generated and managed by an Artificial Intelligence (LLM) based on natural language.
+**OpenAction** is an AI-driven framework for smart home automation. It replaces static, manually created rules with dynamic scripts generated and managed by an Artificial Intelligence (LLM) based on natural language.
 
 ## Core Features
 
