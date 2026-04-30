@@ -8,10 +8,10 @@ home through natural language, turning intent into executable logic.
 
 ## Core Features
 
-*   **️ Natural Language Automation:** Define complex home behaviors via chat. No more wrestling with nested "If-Then" menus or YAML configurations.
-*   ** Stateful Intelligence:** An integrated `Store` provides persistence, allowing scripts to save and retrieve data across multiple executions.
-*   ** Dynamic Scheduling:** A built-in Cron service triggers AI-generated scripts based on time, sensor events, or external API data.
-*   ** Python Execution:** The AI generates standard Python code, enabling complex calculations, loops, and sophisticated error handling.
+*   **️Natural Language Automation:** Define complex home behaviors via chat. No more wrestling with nested "If-Then" menus or YAML configurations.
+*   **Stateful Intelligence:** An integrated `Store` provides persistence, allowing scripts to save and retrieve data across multiple executions.
+*   **Dynamic Scheduling:** A built-in Cron service triggers AI-generated scripts based on time, sensor events, or external API data.
+*   **Python Execution:** The AI generates standard Python code, enabling complex calculations, loops, and sophisticated error handling.
 
 ---
 
