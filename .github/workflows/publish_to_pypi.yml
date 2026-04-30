@@ -3,7 +3,7 @@ name: Python publish
 on:
   push:
     tags:
-      - 'v*' # Triggers only when you push a tag starting with 'v'
+      - '*'
 
 jobs:
   build-n-publish:
