@@ -1,7 +1,7 @@
 # OpenAction
 
 **OpenAction** is an AI-native framework for smart home automation that replaces static, If-This-Then-That" rules 
-with dynamic Python scripts. By leveraging the **Model Context Protocol (MCP)**, it allows users to orchestrate their 
+with dynamic scripts. By leveraging the **Model Context Protocol (MCP)**, it allows users to orchestrate their 
 home through natural language, turning intent into executable logic.
 
 ---
