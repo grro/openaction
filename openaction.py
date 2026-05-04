@@ -1,154 +1,89 @@
 import os
-import sys
 import asyncio
 import logging
+import threading
 import socket
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict
+from time import sleep
+from typing import List, Dict, Any, Optional, Callable
+from datetime import datetime, timedelta
+
+import sys
+from fastmcp import FastMCP, Context
+from zeroconf import IPVersion, ServiceInfo, Zeroconf
+
 from cron import CronService
 from mcp_client import McpRegistry
-from services import Configs, ServiceConfig, ServiceRegistry
+from services import ServiceRegistry, ServiceConfig, Configs
 from store import Store
-from task import TaskAdapter, TaskFactory
+from task import TaskFactory, TaskAdapter
 from task_repository import TaskRepository
-from abc import ABC
-from threading import Thread
-from time import sleep
-from typing import Optional
-from mcp.server.fastmcp import FastMCP
-from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
 
 logger = logging.getLogger(__name__)
 
 
 
-class NoAccessLogsFilter(logging.Filter):
-    """Filter out HTTP access logs from the logging output."""
-    def filter(self, record):
-        # Return False if the log message contains typical Uvicorn access patterns
-        return "GET /sse" not in record.getMessage() and "POST /messages" not in record.getMessage()
 
-# Apply the filter to the root logger's handlers
-for handler in logging.root.handlers:
-    handler.addFilter(NoAccessLogsFilter())
-
-
-class MCPServer(ABC):
-
-    def __init__(self, name: str, port: int):
-        self.name = name
-        self.port = port
-        self.mcp = FastMCP(name, host='0.0.0.0', port=self.port)
-        self.new_loop = asyncio.new_event_loop()
-
-        self.zc: Optional[Zeroconf] = None
-        self.service_info: Optional[ServiceInfo] = None
-
-        # Silence internal MCP server logs
-        logging.getLogger('mcp.server').setLevel(logging.WARNING)
-
-        # Silence Uvicorn HTTP access logs (e.g., POST /messages 202 Accepted)
-        access_logger = logging.getLogger("uvicorn.access")
-        access_logger.setLevel(logging.WARNING)
-        access_logger.propagate = False  # Prevent logs from bubbling up to root logger
-
-        # Silence Uvicorn process startup/shutdown info logs
-        error_logger = logging.getLogger("uvicorn.error")
-        error_logger.setLevel(logging.WARNING)
-        error_logger.propagate = False
-
-
-    async def __run_async(self):
-        await self.mcp.run_sse_async()
-
-    def __start_loop(self, loop):
-        asyncio.set_event_loop(loop)
-        loop.run_forever()
-
-    def _register_mdns(self):
+class MDNS:
+    def __init__(self):
+        self.registered: Dict[str, ServiceInfo] = dict()
+        self.zc = Zeroconf(ip_version=IPVersion.V4Only)
+        self.service_type = "_mcp._tcp.local."
+        self.hostname = socket.gethostname()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self.zc = Zeroconf(ip_version=IPVersion.V4Only)
+            s.connect(("8.8.8.8", 80))
+            self.local_ip = s.getsockname()[0]
+        finally:
+            s.close()
 
-            hostname = socket.gethostname()
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                s.connect(("8.8.8.8", 80))
-                local_ip = s.getsockname()[0]
-            finally:
-                s.close()
-
-            service_type = "_mcp._tcp.local."
-            service_name = f"{self.name}.{service_type}"
-
-            self.service_info = ServiceInfo(
-                type_=service_type,
+    def register_mdns(self, name: str, port: int):
+        try:
+            service_name = f"{name}.{self.service_type}"
+            service_info = ServiceInfo(
+                type_=self.service_type,
                 name=service_name,
-                addresses=[socket.inet_aton(local_ip)],
-                port=self.port,
+                addresses=[socket.inet_aton(self.local_ip)],
+                port=port,
                 properties={
                     "version": "1.0",
                     "path": "/sse",
                     "server_type": "fastmcp"
                 },
-                server=f"{hostname}.local.",
+                server=f"{self.hostname}.local.",
             )
 
-            logger.info(f"mDNS: Registering {service_name} at {local_ip}:{self.port}")
-            self.zc.register_service(self.service_info)
+            logging.info(f"mDNS: Registering {service_name} at {self.local_ip}:{port}")
+            self.zc.register_service(service_info)
+            self.registered[name] = service_info
         except Exception as e:
-            logger.error(
-                f"mDNS Registration failed (service will run without discovery): {e}",
-                exc_info=True
-            )
+            logging.error(f"mDNS Registration failed: {e}")
 
-    def _unregister_mdns(self):
-        if self.zc and self.service_info:
-            logger.info("mDNS: Unregistering service...")
-            self.zc.unregister_service(self.service_info)
+    def unregister_mdns(self, name: str):
+        service_info = self.registered.get(name)
+        if service_info is not None:
+            logging.info("mDNS: Unregistering service...")
+            self.zc.unregister_service(service_info)
             self.zc.close()
 
-    def start(self):
-        self._register_mdns()
-
-        t = Thread(target=self.__start_loop, args=(self.new_loop,), daemon=True)
-        t.start()
-        asyncio.run_coroutine_threadsafe(self.__run_async(), self.new_loop)
-        logger.info(f"MCP Server '{self.name}' running on http://0.0.0.0:{self.port}/sse")
-
-    def start_and_wait(self):
-        self.start()
-        try:
-            while True:
-                sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Shutdown signal received...")
-        finally:
-            self.stop()
-
-    def stop(self):
-        self._unregister_mdns()
-        self.new_loop.stop()
-        logger.info("MCP Server stopped")
 
 
-class OpenActionServer(MCPServer):
-    """
-    Custom MCP Server implementation that integrates a task registry,
-    a cron-based scheduling service, and persistent storage.
-    """
+class OpenActionServer:
 
-    def __init__(self, port: int, dir: str, configs: Dict[str, ServiceConfig], autoscan: bool):
-        # Initialize the parent MCPServer with name and port
-        super().__init__("OpenAction", port)
-
+    def __init__(self, port: int, dir: str, configs: Dict[str, ServiceConfig], autoscan: bool, host: str = "0.0.0.0"):
+        self.name = 'OpenAction'
+        self.host = host
+        self.port = port
         self.config = configs
         self.mcp_registry = McpRegistry(ServiceRegistry(configs, autoscan))
         self.store = Store(name="state", directory=dir)
         self.task_repository = TaskRepository(os.path.join(dir, "tasks"), TaskFactory(self.store, self.mcp_registry)).start()
         self.cron = CronService(self.task_repository).start()
 
+        self.mdns = MDNS()
+        self.mcp = FastMCP(self.name)
+        self.loop = asyncio.new_event_loop()
 
         @self.mcp.tool()
         def list_service_apis() -> str:
@@ -585,6 +520,26 @@ class OpenActionServer(MCPServer):
                 return f"Error: Failed to perform health check: {type(e).__name__} - {str(e)}"
 
 
+    async def __run(self) -> None:
+        logger.info(f"MCP Server '{self.name}' running on http://{self.host}:{self.port}/sse")
+        await self.mcp.run_async(transport="sse", host=self.host, port=self.port)
+
+
+    def start(self):
+        self.mdns.register_mdns(self.name, self.port)
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop.run_until_complete(self.__run())
+        finally:
+            self.loop.close()
+
+
+    def stop(self):
+        self.mdns.unregister_mdns(self.name)
+        if self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        logging.info("MCP Server stopped")
+
 
 def run_server(port: int, dir, configs: Dict[str, ServiceConfig], autoscan: bool):
     mcp_server = OpenActionServer(port, dir, configs, autoscan)
@@ -595,6 +550,7 @@ def run_server(port: int, dir, configs: Dict[str, ServiceConfig], autoscan: bool
     except KeyboardInterrupt:
         logger.info('Stopping the server...')
         mcp_server.stop()
+
 
 
 
