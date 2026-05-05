@@ -223,32 +223,37 @@ class OpenActionServer:
             ====================
             SCRIPT REQUIREMENTS
             ====================
-            The provided `script` string MUST define a single execution function
-            decorated with `@when`. It is recommended to name this function `execute`.
-            Multiple `@when` decorators can be applied to the same function.
+            The provided `script` MUST define a single execution function decorated with
+            one or more `@when` triggers. It is standard practice to name this function `execute`.
 
             Supported Triggers:
-                * @when("Rule loaded"): The script is called after the execution
-                  environment is restarted (may occur every few hours or days).
-                * @when("Time cron <cron>"): The script is executed according to
-                  the provided cron expression.
-                * @when("Prop sensor://metrics/grid_power changed")
+                * @when(trigger="Rule loaded"): Fires when the execution environment
+                  restarts or the task is first registered.
+                * @when(trigger="Time cron <cron_expression>"): Executes based on a
+                  standard cron schedule.
+                * @when(trigger="Property <uri> changed", min_interval_sec=X): Fires when
+                  a specific resource value changes, with a throttle (default is 5 sec).
+
+            Guidance: Prefer event-based triggering (`Property changed`) supplemented by
+                cron-based triggering to ensure state consistency.
 
             Example:
-                @when("Rule loaded")
-                @when("Time cron */5 * * * *")
-                def execute(store, registry):
+                @when(trigger="Rule loaded")
+                @when(trigger="Time cron */5 * * * *")
+                def execute(store, adapter_registry):
                     # Your logic here
-                    return "Executed successfully. Rollershutter is now open."
+                    return "Success: Roller shutter position updated."
 
             Available Environment (injected automatically based on parameter names):
                 The 'Store' and the 'ADapterRegistry' are injected automatically.
                 For the execution to functioncorrectly, you MUST list exactly these two
                 environment  as arguments in the specific order shown below:
 
-                1. `store` (Store): A persistence service for storing
-                   state across executions.
-                3. `registry` (AdapterRegistry): A registry for accessing adapters
+                1. `store` (Store): A persistence service used to maintain state across execution
+                   cycles. It is commonly used for caching values to avoid redundant
+                   high-frequency calls to external services.
+                3. `adapter_registry`: A centralized registry for retrieving concrete
+                    adapters (e.g., http_adapter, mcp_adapter).
 
                 Note: No imports are required for the `@when` decorator or the
                 injected environment.

@@ -8,10 +8,10 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import sleep
-from typing import Any, cast, Optional, List
+from typing import Any, cast, Optional, List, Set
 
 from subscription import SubscriptionService
-from task import TaskAdapter, TaskFactory, TaskExecute, when
+from task import TaskAdapter, TaskFactory, TaskExecute, when, Prop
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +287,7 @@ class TaskRepository:
 
             if len(task.props_observed) > 0:
                 for prop_observed in task.props_observed:
-                    self._subscription_service.subscribe(prop_observed.service, prop_observed.prop, task)
+                    self._subscription_service.subscribe(prop_observed.service, prop_observed.prop, prop_observed.min_interval_sec, task)
 
 
     def _load_task(self, task_name: str, task_code: str, task_description: str, task_props: dict[str, Any]) -> TaskAdapter | None:
@@ -314,9 +314,9 @@ class TaskRepository:
                     target_func = obj
                     load_on_start = getattr(obj, "__openaction_rule_loaded__", False)
                     cron_expr = getattr(obj, "__openaction_cron__", None)
-                    prop_observed = getattr(obj, "__openaction_property_changed__", None)
-                    if prop_observed is not None:
-                        props_observed.add(prop_observed)
+                    observed: Set = getattr(obj, "__openaction_property_changed__", None)
+                    if observed:
+                        props_observed.update(observed)
                     break
 
             if target_func is None:

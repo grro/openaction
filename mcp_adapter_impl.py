@@ -5,13 +5,15 @@ from contextlib import AsyncExitStack
 from threading import Thread
 from time import sleep
 from typing import Dict, Optional, Callable, Any
-
+from datetime import datetime
 from fastmcp import Client
 
+from api.adapter import AdapterRegistry
 from api.mcp_adapter import MCPAdapter
 from adapter_impl import Registry
 from services import MCP_SSE, ServiceRegistry
-
+from subscription import Subscription
+from task import TaskAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -240,3 +242,4 @@ class McpRegistry(Registry):
                 client = self._mcp.pop(name)
                 client.close() # Kills the background thread gracefully
                 logger.debug(f"MCP server '{name}' removed and thread stopped.")
+

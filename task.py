@@ -22,18 +22,22 @@ TaskExecute = Callable[[Store, AdapterRegistry], str]
 class Prop:
     service: str
     prop: str
+    min_interval_sec:int
 
 
 
-def when(target: str):
+def when(target: str = None, **kwargs):
+    target = target or kwargs.get('trigger')
+    min_interval = kwargs.get('min_interval_sec', 5)
+
     """Decorator to define a task's trigger (cron, property change, etc.) and execution entry point."""
     def decorator(func):
         if not hasattr(func, "__openaction_cron__"):
             func.__openaction_cron__ = None
         if not hasattr(func, "__openaction_rule_loaded__"):
-            func.__openaction_service__ = None
+            func.__openaction_rule_loaded__ = False
         if not hasattr(func, "__openaction_property_changed__"):
-            func.__openaction_property_changed__ = None
+            func.__openaction_property_changed__ = set()
 
         # Support 'Time cron' OpenHab-style string and convert to linux 5-part if it's longer
         if target.upper().startswith("TIME CRON "):
@@ -59,10 +63,18 @@ def when(target: str):
         elif target.upper().startswith("PROPERTY"):
             parts = target[8:].strip().split()
             entity = parts[0].strip()
-            op = parts[1].strip()
+            op = parts[1].strip() if len(parts) > 1 else ""
 
             entity_parts = entity.split("#")
-            func.__openaction_property_changed__ = Prop(entity_parts[0].strip(), entity_parts[1].strip())
+            
+            p = Prop(entity_parts[0].strip(), entity_parts[1].strip(), min_interval)
+
+            if not func.__openaction_property_changed__:
+                func.__openaction_property_changed__ = set()
+            elif not isinstance(func.__openaction_property_changed__, set):
+                func.__openaction_property_changed__ = {func.__openaction_property_changed__}
+
+            func.__openaction_property_changed__.add(p)
 
         return func
 
