@@ -240,9 +240,10 @@ class OpenActionServer:
             Example:
                 @when(trigger="Rule loaded")
                 @when(trigger="Time cron */5 * * * *")
+                @when(trigger="Property Energy#sensor://metrics/available_surplus changed", min_interval_sec=10)
                 def execute(store, adapter_registry):
                     # Your logic here
-                    return "Success: Roller shutter position updated."
+                    return "Success: heater power reduced by 100W"
 
             Available Environment (injected automatically based on parameter names):
                 The 'Store' and the 'ADapterRegistry' are injected automatically.
