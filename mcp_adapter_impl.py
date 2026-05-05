@@ -2,17 +2,22 @@ import asyncio
 import logging
 import threading
 from contextlib import AsyncExitStack
+from threading import Thread
+from time import sleep
 from typing import Dict, Optional, Callable, Any
 
 from fastmcp import Client
 
-from api.mcp_service import MCPClientRegistry, MCPClient
+from api.mcp_adapter import MCPAdapter
+from adapter_impl import Registry
 from services import MCP_SSE, ServiceRegistry
+
 
 logger = logging.getLogger(__name__)
 
 
-class SyncMCPClient(MCPClient):
+
+class SyncMCPClient(MCPAdapter):
     """Synchronous MCP client communicating over HTTP/SSE transport using FastMCP."""
 
     def __init__(self, url: str):
@@ -156,34 +161,55 @@ class SyncMCPClient(MCPClient):
         return f"SyncMCPClient(url='{self.url}')"
 
 
-class McpRegistry(MCPClientRegistry):
+class McpRegistry(Registry):
+
+    NAME = 'mcp_adapter'
 
     def __init__(self, service_registry: ServiceRegistry):
+        self.is_running = True
         self._mcp: Dict[str, SyncMCPClient] = {}
         self._service_registry = service_registry
         self._service_registry.add_listener(self._refresh)
         self._refresh()
 
+    def start(self):
+        self.is_running = True
+        Thread(target=self._loop, daemon=True).start()
+        return self
+
     def close(self):
-        """Explicitly shut down the registry and all background threads."""
+        self.is_running = False
         self._service_registry.remove_listener(self._refresh)
         for client in self._mcp.values():
             client.close()
         self._mcp.clear()
 
     def __del__(self):
-        # Fallback cleanup
         try:
             self.close()
         except Exception:
             pass
 
-    def get(self, name: str) -> Optional[MCPClient]:
-        """Return the MCP client for the given name, or None."""
+    def get_adapter(self, name: Optional[str] = None) -> Optional[Any]:
+        """
+        Retrieves a specific MCP client by name.
+
+        Note: This specific registry currently does not define a 'default'
+        adapter if name is None.
+        """
+        if name is None:
+            logger.warning("McpRegistry: No name provided, and no default MCP client configured.")
+            return None
+
         return self._mcp.get(name)
 
-    def clone(self):
-        return McpRegistry(self._service_registry)
+    def _loop(self):
+        while self.is_running:
+            try:
+                self._refresh()
+            except Exception as e:
+                logger.warning(f"Error in MCP registry loop: {e}")
+            sleep(60)
 
     def _refresh(self):
         current_services = dict(self._service_registry.registered_services)

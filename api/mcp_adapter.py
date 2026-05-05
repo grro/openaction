@@ -5,9 +5,9 @@ from mcp import ListToolsResult
 from mcp.types import CallToolResult
 
 
-class MCPClient(ABC):
+class MCPAdapter(ABC):
     """
-    Abstract base class providing a standardized interface for Model Context Protocol (MCP) clients.
+    Interface for Model Context Protocol (MCP) clients.
 
     This wrapper encapsulates communication with connected MCP servers. Connection
     lifecycle management is handled internally.
@@ -15,6 +15,28 @@ class MCPClient(ABC):
     Note: Client instances are typically dedicated to specific tasks and are not
     intended to be shared across concurrent executions.
     """
+
+    @abstractmethod
+    def list_resources(self):
+        """
+        Retrieves a list of available resources exposed by the connected MCP server.
+
+        Returns:
+            ListResourcesResult: An object containing the available resources, including
+                                 their URIs, names, and descriptions.
+        """
+        pass
+
+    @abstractmethod
+    def read_resource(self, uri: str):
+        """
+        Retrieves a list of available resources exposed by the connected MCP server.
+
+        Returns:
+            ListResourcesResult: An object containing the available resources, including
+                                 their URIs, names, and descriptions.
+        """
+        pass
 
     @abstractmethod
     def list_tools(self) -> ListToolsResult:
@@ -43,26 +65,3 @@ class MCPClient(ABC):
         """
         pass
 
-
-
-class MCPClientRegistry(ABC):
-    """
-    Registry service for discovery and orchestration of multiple MCP clients.
-
-    Acts as a central access point for retrieving specific client instances
-    by their configured identifiers.
-    """
-
-    @abstractmethod
-    def get(self, name: str) -> Optional[MCPClient]:
-        """
-        Resolves and returns an MCPClient instance by its registration name.
-
-        Args:
-            name (str): The unique identifier of the target MCP client.
-
-        Returns:
-            Optional[MCPClient]: The requested client instance, or None if
-                                 no client is registered under that name.
-        """
-        pass

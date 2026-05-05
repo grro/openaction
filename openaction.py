@@ -12,10 +12,12 @@ import sys
 from fastmcp import FastMCP, Context
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
+from adapter_impl import AdapterManager
 from cron import CronService
-from mcp_client import McpRegistry
+from http_adapter_impl import HttpRegistry
+from mcp_adapter_impl import McpRegistry
 from services import ServiceRegistry, ServiceConfig, Configs
-from store import Store
+from store_impl import SimpleStore
 from task import TaskFactory, TaskAdapter
 from task_repository import TaskRepository
 
@@ -75,10 +77,11 @@ class OpenActionServer:
         self.name = 'OpenAction'
         self.host = host
         self.port = port
-        self.config = configs
-        self.mcp_registry = McpRegistry(ServiceRegistry(configs, autoscan))
-        self.store = Store(name="state", directory=dir)
-        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), TaskFactory(self.store, self.mcp_registry)).start()
+        self.service_registry = ServiceRegistry(configs, autoscan)
+        self.mcp_registry = McpRegistry(self.service_registry).start()
+        self.adapter_manager = AdapterManager({HttpRegistry.NAME: HttpRegistry(), McpRegistry.NAME: self.mcp_registry})
+        self.store = SimpleStore(name="state", directory=dir)
+        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), TaskFactory(self.store, self.adapter_manager)).start()
         self.cron = CronService(self.task_repository).start()
 
         self.mdns = MDNS()
@@ -86,24 +89,30 @@ class OpenActionServer:
         self.loop = asyncio.new_event_loop()
 
         @self.mcp.tool()
-        def list_service_apis() -> str:
+        def list_api() -> str:
             """
-            Retrieves the Python source code defining all available service client interfaces.
+            Provides the source code definitions for all available adapter types (connectors) and the local Store.
 
-            CRITICAL: This is your primary discovery tool for writing task logic.
-            It reveals the actual class definitions, method signatures, and docstrings
-            for the clients injected into your 'execute' function.
+            This tool serves as the 'Source of Truth' for developers writing task logic. It reveals
+            the actual class definitions, method signatures, and docstrings for the components
+            available in the execution environment.
 
-            Note: No Python imports are required to use the injected services.
-            They are provided automatically as arguments at runtime.
-
-            Use this tool to:
-            1. Check which methods exist on a specific registry.
-            2. Understand the required arguments and return types for hardware interactions.
-            3. Identify the correct data structures for state persistence.
+            Runtime Behavior:
+            - Both a 'Store' instance and an 'AdapterRegistry' are automatically injected into
+              the task's execution context.
+            - The 'Store' instance is used to maintain task state across different executions.
+              It provides simple get/set methods and is backed by local file-based storage.
+            - The 'AdapterRegistry' is used to retrieve concrete adapter instances by specifying
+              the 'adapter_type' and an optional 'name'.
+            - Note: Certain adapter types do not require a name and will return a default
+              implementation if the name is omitted.
+            - No manual Python imports are required within your task scripts to use these components.
+            - Use the source code provided by this tool to understand the available methods
+              and expected data structures for both the Store and all connectors.
 
             Returns:
-                str: Python source code of all available service access classes.
+                str: A formatted string containing the Python source code of the Store interface
+                     as well as all available adapter classes.
             """
             try:
                 # Resolve the absolute path to the 'api' directory relative to this file
@@ -112,19 +121,18 @@ class OpenActionServer:
                 if not api_dir.is_dir():
                     return "Error: No 'api' directory found."
 
-                services = []
+                apis = []
 
-                # Use glob to effortlessly find all matching service files
-                for file_path in api_dir.glob("*_service.py"):
+                for file_path in api_dir.glob("*"):
                     if file_path.is_file():
                         # read_text safely opens, reads, and closes the file automatically
                         content = file_path.read_text(encoding="utf-8")
-                        services.append(f"--- {file_path.name} ---\n```python\n{content}\n```")
+                        apis.append(f"--- {file_path.name} ---\n```python\n{content}\n```")
 
-                if not services:
-                    return "No service classes found in the 'api' directory."
+                if not apis:
+                    return "No api classes found in the 'api' directory."
 
-                return "\n\n".join(services)
+                return "\n\n".join(apis)
 
             except Exception as e:
                 # Providing the exception type makes debugging significantly easier
@@ -137,35 +145,43 @@ class OpenActionServer:
             Lists all external hardware and software services currently available to OpenAction.
 
             DISCOVERY FLOW:
-            1. Call this tool to see WHAT is connected (e.g., 'hue_lights', 'office_shutter').
-            2. Call 'list_service_client' to see HOW to use the code to talk to them.
+            1. Call this tool to identify WHAT is connected (e.g., 'hue_lights', 'office_shutter').
+            2. Call 'list_api' to determine HOW to interact with them via code.
 
-            This tool distinguishes between:
-            - MCP [SSE]: Native Model Context Protocol servers. Access via 'mcp_registry.get("name")'.
-            - HTTP [REST]: Standard web services. Access via 'http_client'.
-            - SHELLY: Local IoT devices (smart switches, roller shutters, etc.).
-              Access via: The injected `http_client` to call their URL.
-              IMPORTANT: The specific API is NOT provided by 'list_service_apis'.
-              You must determine the correct HTTP endpoints yourself (e.g., Shelly Gen 1
-              '/relay/0' or Gen 2 RPC) based on the device URL and common Shelly documentation.
+            Service Categorization & Access:
+            - MCP [SSE]: Native Model Context Protocol servers.
+              Access: Use `registry.get_adapter("mcp_adapter", "service_name")`.
+            - HTTP [REST]: Standard web services.
+              Access: Use `registry.get_adapter("mcp_adapter")`.
+            - SHELLY: Local IoT devices (switches, roller shutters, etc.).
+              Access: Use `registry.get_adapter("mcp_adapter")`
+              IMPORTANT: Specific API structures for Shelly are NOT provided by 'list_service_apis'.
+              You must implement the correct HTTP endpoints (e.g., Shelly Gen 1 '/relay/0'
+              or Gen 2 RPC calls) based on the device URL and standard Shelly documentation.
 
             Returns:
-                str: A formatted list of service names, protocols, and endpoints.
+                str: A formatted list containing service names, protocols, endpoints, and reachability status.
             """
             try:
-                if not hasattr(self, 'config') or not self.config:
+                # Pythonic check for an empty registry
+                if not self.service_registry.registered_services:
                     return "Environment Empty: No external services are currently configured."
 
                 output = [
                     "Active Service Environment:",
-                    "===========================\n",
+                    "===========================",
+                    "Status Legend: [✔] Reachable | [✘] Unreachable\n",
                     "Use the names below as identifiers in your Python scripts:\n"
                 ]
 
-                for conf in self.config.values():
+                # Iterate through registered services to build the discovery list
+                for name, conf in self.service_registry.registered_services.items():
+                    is_reachable = name in self.service_registry.reachable_services
+                    status_icon = "✔" if is_reachable else "✘"
                     svc_type = str(conf.type).upper()
-                    output.append(f"• **{conf.name}** [{svc_type}]: `{conf.url}`")
-                    output.append("") # Spacer for readability
+
+                    output.append(f"• [{status_icon}] **{conf.name}** [{svc_type}]: `{conf.url}`")
+                    output.append("")  # Spacer for readability
 
                 return "\n".join(output)
 
@@ -200,47 +216,51 @@ class OpenActionServer:
             ====================
             SCRIPT REQUIREMENTS
             ====================
-            The provided `script` string MUST define the following two functions:
+            The provided `script` string MUST define a single execution function
+            decorated with `@when`. It is recommended to name this function `execute`.
+            Multiple `@when` decorators can be applied to the same function.
 
-            1. `def cron():`
-                Defines the execution schedule for the task.
-                Returns:
-                    A standard 5-field cron expression (minute, hour, day of month, month, day of week).
+            Supported Triggers:
+                * @when("Time cron <cron>"): The script is executed according to
+                  the provided cron expression.
+                * @when("Rule loaded"): The script is called after the execution
+                  environment is restarted (may occur every few hours or days).
 
-            2. `def execute(store_service, mcp_registry, http_client):`
-                The callback function executed whenever the task is triggered by the cron schedule.
-                This function contains the core logic of the task. Environment clients will be
-                injected for each task individually within a dedicated namespace.
-                Returns:
-                    A human-readable summary of the task execution result and the
-                    updated device state, if applicable  (in a few sentences).
+            Example:
+                @when("Rule loaded")
+                @when("Time cron */5 * * * *")
+                def execute(store, registry):
+                    # Your logic here
+                    return "Executed successfully. Rollershutter is now open."
 
-                Available Environment Tools:
-                    Before implementation, call these tools to map the environment:
-                    - `list_provided_services()`: To find available services
-                    - `list_service_apis()`: To retrieve method signatures for the injected registries.
+            Available Environment (injected automatically based on parameter names):
+                The 'Store' and the 'ADapterRegistry' are injected automatically.
+                For the execution to functioncorrectly, you MUST list exactly these two
+                environment  as arguments in the specific order shown below:
 
-                Injected parameters:
-                    store_service (StoreService): A persistence service for storing state across executions.
-                    mcp_registry (MCPClientRegistry): A registry for accessing configured MCP clients.
-                    http_client (HttpClient): A http client with cached sessions
+                1. `store` (Store): A persistence service for storing
+                   state across executions.
+                3. `registry` (AdapterRegistry): A registry for accessing adapters
 
-                Mandatory Error Handling:
-                    The script must implement robust error handling. Responses from external clients
-                    and services MUST be explicitly evaluated for error states. If an error occurs,
-                    an Exception MUST be raised. Raising an exception ensures the system will
-                    automatically retry the task 1 minute later.
+                Note: No imports are required for the `@when` decorator or the
+                injected environment.
 
-                Validation & Consolidation Protocol (Mandatory):
-                    Before final deployment, you MUST adhere to the following workflow:
-                    1. Check Existing: Verify no script already exists managing the same device.
-                       If one exists, MERGE your logic into the existing task.
-                    2. Test First: Register a temporary test task (is_test=True).
-                    3. Naming: The test task name MUST start with 'test_' and include a `ttl`.
-                    4. Verify: Trigger execution manually via the `execute_task_now` tool and
-                       ensure all JSON response structures are correctly handled.
-                    5. Cleanup: Delete the test task after validation.
+            Mandatory Error Handling:
+            The script must implement robust error handling. Responses from external clients
+            and services MUST be explicitly evaluated for error states. If an error occurs,
+            an Exception MUST be raised. Raising an exception ensures the system will
+            automatically retry the task 1 minute later.
+
+            Validation & Consolidation Protocol (Mandatory):
+                1. Check Existing: Verify no script already exists managing the same device.
+                   If one exists, MERGE your logic into the existing task.
+                2. Test First: Register a temporary test task (is_test=True).
+                3. Naming: The test task name MUST start with 'test_' and include a `ttl`.
+                4. Verify: Trigger execution manually via the `execute_task_now` tool and
+                   ensure all JSON response structures are correctly handled.
+                5. Cleanup: Delete the test task after validation.
             """
+
 
             if is_test:
                 # Rule 1: Test tasks must start with 'test_'
@@ -260,7 +280,7 @@ class OpenActionServer:
                     return f"Error: Validation failed. Production tasks (is_test=False) should not start with 'test_'."
 
             try:
-                self.task_repository.register(name, script, description, ttl)
+                self.task_repository.register(name, script, description, ttl, is_test)
 
                 if ttl is None:
                     logger.info(f"Production Task '{name}' registered successfully.")
@@ -298,18 +318,18 @@ class OpenActionServer:
         @self.mcp.tool()
         def list_tasks() -> str:
             """
-            Retrieves a concise list of all registered tasks.
+            Retrieves a concise list of all registered tasks, indicating which are temporary tests.
             """
             try:
-                # Pythonic check for empty dictionary
                 if not self.task_repository.tasks:
                     return "Currently, no tasks are registered."
 
                 output = ["### Registered Tasks", "=================\n"]
 
-                # Iterate over tasks and extract only name and description
                 for task in self.task_repository.tasks.values():
-                    output.append(f"• **{task.name}** [{task.state}]: {task.description}")
+                    # Add a clear [TEST] marker if the task is temporary
+                    test_tag = " [TEST]" if getattr(task, 'is_test_task', False) else ""
+                    output.append(f"• **{task.name}**{test_tag} [{task.state}]: {task.description}")
 
                 return "\n".join(output)
 
@@ -317,22 +337,24 @@ class OpenActionServer:
                 logger.error(f"Failed to list tasks: {e}", exc_info=True)
                 return "Error: Could not retrieve tasks from the registry. Check server logs."
 
+
         @self.mcp.tool()
         def get_task(name: str) -> str:
             """
-            Retrieves detailed information and status for a specific task.
+            Retrieves detailed information, source code, and validation status for a specific task.
             """
             try:
-                # Use .get() to avoid redundant dictionary lookups
                 task = self.task_repository.tasks.get(name)
 
                 if not task:
                     return f"Error: Task '{name}' is not currently registered."
 
-                # Updated headers to reflect a single task rather than a list
                 output = [f"### Task Overview: {task.name}", "=================\n"]
-                output.append(f"**Description:** {task.description}\n")
 
+                # Explicitly show if this is a test task
+                is_test = getattr(task, 'is_test_task', False)
+                output.append(f"**Type:** {'Temporary Test Task' if is_test else 'Permanent Deployment'}")
+                output.append(f"**Description:** {task.description}\n")
                 output.append(f"**State:** {task.state}\n")
 
                 # Handle stored task state
@@ -341,12 +363,12 @@ class OpenActionServer:
                     output.append("**Stored Data:**")
                     for k, v in task_data.items():
                         v_str = str(v)
-                        if len(v_str) > 200:
-                            v_str = v_str[:197] + "..."
+                        if len(v_str) > 400:
+                            v_str = v_str[:397] + "..."
                         output.append(f"  - `{k}`: `{v_str}`")
-                    output.append("") # Spacing for readability
+                    output.append("")
 
-                # Handle execution history (Pythonic check for empty lists)
+                    # Handle execution history
                 if not task.last_executions:
                     output.append("**Last Results:** Never executed\n")
                 else:
@@ -358,7 +380,7 @@ class OpenActionServer:
                         if len(result_text) > 600:
                             result_text = result_text[:597] + "..."
                         output.append(f"  - `{timestamp}`: {result_text}")
-                    output.append("") # Spacing for readability
+                    output.append("")
 
                 output.append("**Source Code:**")
                 output.append(f"```python\n{task.code}\n```")
@@ -367,7 +389,6 @@ class OpenActionServer:
                 return "\n".join(output)
 
             except Exception as e:
-                # Fixed copy-paste error in the log and return message
                 logger.error(f"Failed to retrieve task '{name}': {e}", exc_info=True)
                 return f"Error: Could not retrieve task '{name}'. Check server logs."
 
@@ -375,7 +396,18 @@ class OpenActionServer:
         @self.mcp.tool()
         def execute_task_now(name: str) -> str:
             """
-            Triggers the immediate manual execution of a registered Python task.
+            Triggers the immediate manual execution of a registered task.
+
+            Please note that a `@when` statement has to be present on the task
+            for it to be recognized. Typically, `@when("Rule loaded")` is used.
+
+            Args:
+                name (str): The unique name of the task to be executed.
+
+            Returns:
+                str: A formatted string containing the execution status, timestamp
+                     (if available), and a truncated result (up to 300 characters).
+                     Returns an error message if the task is not found or fails.
             """
             try:
                 # Find the task by name in the registry
@@ -396,9 +428,6 @@ class OpenActionServer:
 
                 # Limit the result output to 300 characters to prevent log/token flooding
                 result_str = str(raw_result)
-                if len(result_str) > 300:
-                    result_str = result_str[:297] + "..."
-
                 logger.info(f"Task '{name}' executed \nResult: {result_str}")
 
                 # Format execution timestamp if available

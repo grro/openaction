@@ -8,7 +8,8 @@ from pathlib import Path
 from random import randint
 from typing import Any
 from appdirs import site_data_dir
-from api.store_service import StoreService
+
+from api.store import Store
 
 
 class Entry:
@@ -36,7 +37,7 @@ class Entry:
         return Entry(data["value"], datetime.fromisoformat(data["expire_date"]))
 
 
-class Store(StoreService):
+class SimpleStore(Store):
     def __init__(self, name: str, sync_period_sec: int | None = None, directory: str | None = None):
         self.sync_period_sec = sync_period_sec
         self._name = name
@@ -152,7 +153,7 @@ class Store(StoreService):
 
 
 
-class ScopedStore(StoreService):
+class ScopedStore(Store):
     """
     A wrapper around a Store that automatically prefixes all keys with a scope identifier.
     This allows multiple task instances to share a single Store without key conflicts.
@@ -166,7 +167,7 @@ class ScopedStore(StoreService):
         task2_store['status'] = 'idle'     # Actually stores as 'task2:status'
     """
 
-    def __init__(self, store: Store, scope: str, separator: str = ":"):
+    def __init__(self, store: SimpleStore, scope: str, separator: str = ":"):
         """
         Initialize a scoped store wrapper.
 
@@ -204,3 +205,5 @@ class ScopedStore(StoreService):
         """Return all keys belonging to this scope, with the scope prefix stripped."""
         prefix = f"{self._scope}{self._separator}"
         return [key[len(prefix):] for key in self._store.keys() if key.startswith(prefix)]
+
+

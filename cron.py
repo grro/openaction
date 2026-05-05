@@ -5,7 +5,7 @@ from threading import Thread
 from time import sleep
 from typing import Dict
 
-from task import CronTaskAdapter, TaskFactory
+from task import TaskAdapter, TaskFactory
 from task_repository import TaskRepository
 
 
@@ -18,7 +18,6 @@ class CronService:
         self._is_running = False
         self._task_repository = task_repository
         self._cron_cache: Dict[str, set[int]] = {}
-        self._executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="CronWorker")
 
     def __str__(self):
         return f"CronService(jobs={len(self._task_repository.tasks)})\n\r" + "\n\r".join([" * " + str(task) for task in self._task_repository.tasks])
@@ -39,7 +38,7 @@ class CronService:
             for task in list(self._task_repository.tasks.values()):
                 try:
                     if self._should_run(task, now, run_key):
-                        self._executor.submit(self._safe_run, task)
+                        task.safe_run()
                 except Exception:
                     logger.exception(f"Error triggering task: {task.name}")
 
@@ -47,14 +46,10 @@ class CronService:
             sleep_time = (next_tick - datetime.now()).total_seconds()
             sleep(sleep_time)
 
-    def _safe_run(self, task: CronTaskAdapter):
-        """Executes the task and ensures any unhandled exceptions are logged."""
-        try:
-            task.run()
-        except Exception as e:
-            logger.error(f"Execution failed for task '{task.name}': {e}")
 
-    def _should_run(self, task: CronTaskAdapter, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
+    def _should_run(self, task: TaskAdapter, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
+        if task.cron_expression is None:
+            return False
         # If task failed recently, wait 1 minute before retrying
         time_since_error = task.last_failure_age()
         if time_since_error is not None:
@@ -85,6 +80,8 @@ class CronService:
 
     def _matches(self, expression: str, now: datetime) -> bool:
         """Splits the cron expression and evaluates each field."""
+        if not expression:
+            return False
         try:
             minute, hour, day, month, weekday = expression.split()
             cron_weekday = (now.weekday() + 1) % 7 # ISO (Mon=0) to Cron (Sun=0/7)

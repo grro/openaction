@@ -1,18 +1,25 @@
 import logging
 import requests
 from datetime import datetime, timedelta
-from typing import Any
 from requests import Response, Session
+from typing import  Optional, Any
 
-from api.http_service import HttpClient
+from api.http_adapter import HttpAdapter
+from adapter_impl import Registry
 
-class AutoRecreateHttpClient(HttpClient):
+
+
+
+
+logger = logging.getLogger(__name__)
+
+class AutoRecreateHttpClient(HttpAdapter):
     def __init__(self, ttl_minutes: int = 30) -> None:
         self.ttl: timedelta = timedelta(minutes=ttl_minutes)
         self.last_created: datetime | None = None
-        self.session: Session = self._create_session()
+        self.session: Session = self._create_session("http client initialization")
 
-    def _create_session(self) -> Session:
+    def _create_session(self, reason: str) -> Session:
         """Closes the old session (if any) and opens a new one."""
         if hasattr(self, 'session') and self.session:
             try:
@@ -22,7 +29,7 @@ class AutoRecreateHttpClient(HttpClient):
 
         session = requests.Session()
         self.last_created = datetime.now()
-        logging.info("New http session created")
+        logger.info("New http session created (" + reason +")")
         return session
 
     def _is_expired(self) -> bool:
@@ -32,8 +39,8 @@ class AutoRecreateHttpClient(HttpClient):
     def request(self, method: str, url: str, **kwargs: Any) -> Response:
         # 1. Pre-check: Has the time expired?
         if self._is_expired():
-            logging.info("TTL reached. Renewing session before request.")
-            self.session = self._create_session()
+            logger.info("TTL reached. Renewing session before request.")
+            self.session = self._create_session("ttl reached")
 
         try:
             # Execute request
@@ -41,16 +48,16 @@ class AutoRecreateHttpClient(HttpClient):
 
             # Optional: On 401, also recreate the session for the next call
             if response.status_code == 401:
-                logging.warning("Status 401: Session will be renewed for the next call.")
-                self.session = self._create_session()
+                logger.warning("Status 401: Session will be renewed for the next call.")
+                self.session = self._create_session("session invalid due to former 401 status")
 
             return response
 
         except Exception as e:
             # 2. Error-check: Recreate immediately on exception
-            logging.exception("Exception caught: %s", e)
-            logging.info("Session will be re-initialized for the next attempt.")
-            self.session = self._create_session()
+            logger.exception("Exception caught: %s", e)
+            logger.info("Session will be re-initialized for the next attempt.")
+            self.session = self._create_session("unknown error of former execution")
 
             # Pass error directly (no retry)
             raise e
@@ -61,3 +68,14 @@ class AutoRecreateHttpClient(HttpClient):
 
     def post(self, url: str, **kwargs: Any) -> Response:
         return self.request('POST', url, **kwargs)
+
+
+
+class HttpRegistry(Registry):
+    NAME = 'http_adapter'
+
+    def __init__(self):
+        self.http_client = AutoRecreateHttpClient()
+
+    def get_adapter(self, name: Optional[str] = None) -> Optional[Any]:
+        return self.http_client

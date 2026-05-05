@@ -3,20 +3,16 @@ import re
 import threading
 import json
 import zipfile
-from collections.abc import Callable
+import inspect
+from concurrent.futures.thread import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import sleep
 from typing import Any, cast, Optional, List
-from api.mcp_service import MCPClientRegistry
-from api.http_service import HttpClient
-from api.store_service import StoreService
-from task import TaskAdapter, TaskFactory
-
+from task import TaskAdapter, TaskFactory, TaskExecute, when
 
 logger = logging.getLogger(__name__)
 
-TaskExecute = Callable[[StoreService, MCPClientRegistry, HttpClient], str]
 
 
 class CodeRepository:
@@ -40,7 +36,7 @@ class CodeRepository:
             self._codedir / f"{name}.props"
         )
 
-    def register(self, name: str, task_code: str, description: str, ttl:int) -> None:
+    def register(self, name: str, task_code: str, description: str, ttl:int, is_test: bool) -> None:
         """Register a new task by storing its code and description.
 
         Args:
@@ -56,15 +52,22 @@ class CodeRepository:
         if not name or not re.match(r"^[\w\-]+$", name):
             raise ValueError("Task name must be alphanumeric (with _ or - allowed)")
 
+        if self.exists(name):
+            logger.info("Overwriting existing task '%s'", name)
+
         code_file, desc_file, props_file = self._get_paths(name)
 
         # Write files
         code_file.write_text(task_code, encoding="utf-8")
         desc_file.write_text(description, encoding="utf-8")
-        if ttl is None:
-            props_file.write_text(json.dumps({}), encoding="utf-8")
-        else:
-            props_file.write_text(json.dumps({"valid_to": (datetime.now() + timedelta(seconds=ttl)).isoformat()}), encoding="utf-8")
+
+        props = {}
+        if ttl is not None:
+            props["valid_to"] = (datetime.now() + timedelta(seconds=ttl)).isoformat()
+        if is_test:
+            props["is_test"] = True
+        props_file.write_text(json.dumps({}), encoding="utf-8")
+
 
     def deregister(self, name: str, reason: str) -> None:
         """Remove a task and its description.
@@ -82,7 +85,7 @@ class CodeRepository:
         for file_path in self._get_paths(name):
             file_path.unlink(missing_ok=True)
 
-    def get(self, name: str) -> tuple[str, str, dict[str, Any]]:
+    def read(self, name: str) -> tuple[str, str, dict[str, Any]]:
         """Retrieve task code and description.
 
         Args:
@@ -185,9 +188,11 @@ class TaskRepository:
         self._code_registry = CodeRepository(codedir=code_dir)
         self._task_factory = task_factory
         self.tasks: dict[str, TaskAdapter] = {}
+        self._executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
+        logger.info("TaskRepository initialized (Taskexecutor started)")
 
-    def register(self, name: str, task_code: str, description: str, ttl:int) -> None:
-        self._code_registry.register(name, task_code, description, ttl)
+    def register(self, name: str, task_code: str, description: str, ttl:int, is_test: bool) -> None:
+        self._code_registry.register(name, task_code, description, ttl, is_test)
         self._scan()
         if name not in self.tasks:
             raise ValueError(f"Failed to register task '{name}': Please check your script syntax, required functions, and logs. It was rejected by the registry.")
@@ -224,6 +229,9 @@ class TaskRepository:
 
     def _loop(self) -> None:
         """Background loop that scans for tasks periodically."""
+
+        sleep(10)
+
         # Wait returns True if the flag is set, False if the timeout occurs.
         # We loop as long as the stop event is NOT set.
         while self.__is_running:
@@ -237,27 +245,42 @@ class TaskRepository:
                 logger.exception(f"Unexpected error in periodic clean up: {e}")
             sleep(60)
 
+        self._executor.shutdown()
+        logger.info("TaskRepository stopped and Taskexecutor shut down.")
+
     def _scan(self) -> None:
-        current_tasks: dict[str, TaskAdapter] = {}
-        for task_name in self._code_registry.list():
+
+        stored_task_names = self._code_registry.list()
+
+        removed_task_names = set(self.tasks.keys()) - set(stored_task_names)
+        current_tasks = {name: task for name, task in self.tasks.items() if name not in removed_task_names}
+
+        new_task_names = set(stored_task_names) - set(self.tasks.keys())
+        for name in new_task_names:
             try:
-                task_code, task_desc, task_props = self._code_registry.get(task_name)
+                task_code, task_desc, task_props = self._code_registry.read(name)
             except Exception as e:
-                logger.error(f"Failed to retrieve task '{task_name}' from repository: {e}")
+                logger.error(f"Failed to retrieve task '{name}' from code repository: {e}")
                 continue
-            task = self._load_task(task_name, task_code, task_desc, task_props)
+            task = self._load_task(name, task_code, task_desc, task_props)
             if task is not None:
-                current_tasks[task_name] = task
+                current_tasks[name] = task
+                logger.info(f"Task '{name}' with function '{task.function_name}' found in code repository.")
 
-        old_tasks = self.tasks
+        # make updated tasks list visible
         self.tasks = current_tasks
-        added_tasks = set(current_tasks.keys()) - set(old_tasks.keys())
-        removed_tasks = set(old_tasks.keys()) - set(current_tasks.keys())
 
-        for name in added_tasks:
-            logger.info(f"Task '{name}' was added to the registry.")
-        for name in removed_tasks:
-            logger.info(f"Task '{name}' was removed from the registry.")
+        for name in removed_task_names:
+            logger.info(f"Task '{name}' was removed from the registry")
+
+        for name in new_task_names:
+            task = current_tasks[name]
+            if task.load_on_start:
+                logger.info(f"Task '{name}' added to registry (is marked to load on start. Triggering initial execution)")
+                task.safe_run()
+            else:
+                logger.info(f"Task '{name}' added to registry")
+
 
     def _load_task(self, task_name: str, task_code: str, task_description: str, task_props: dict[str, Any]) -> TaskAdapter | None:
         """Load and instantiate a task from raw code strings.
@@ -270,17 +293,55 @@ class TaskRepository:
         """
         try:
             # Execute task code in an isolated namespace.
-            namespace: dict[str, object] = {"__name__": task_name}
+            namespace: dict[str, object] = {"__name__": task_name, "when": when}
             exec(task_code, namespace)
 
-            cron_getter = namespace.get("cron")
-            execute = namespace.get("execute")
+            target_func = None
+            cron_expr = None
+            load_on_start = False
 
-            typed_cron_getter = cast(Callable[[], str], cron_getter)
-            typed_execute = cast(TaskExecute, execute)
+            for obj in namespace.values():
+                if callable(obj) and (hasattr(obj, "__openaction_rule_loaded__") or hasattr(obj, "__openaction_cron__")):
+                    target_func = obj
+                    cron_expr = getattr(obj, "__openaction_cron__", None)
+                    load_on_start = getattr(obj, "__openaction_rule_loaded__", False)
+                    break
 
-            return self._task_factory.create(task_name, task_code, task_description, task_props, typed_cron_getter, typed_execute)
+            if target_func is None:
+                target_func = namespace.get("execute")
 
+                if not callable(target_func):
+                    raise ValueError("Missing required function 'execute(store, registry) -> str' or @when annotation")
+
+
+            try:
+                sig_str = str(inspect.signature(target_func))
+                target_func_name = getattr(target_func, "__name__", "execute") + sig_str
+            except Exception:
+                target_func_name = getattr(target_func, "__name__", str(target_func))
+
+            def wrapped_execute(store, registry):
+                sig = inspect.signature(target_func)
+                params = list(sig.parameters.keys())
+
+                injectable = {
+                    "store": store,
+                    "registry": registry
+                }
+
+                kwargs = {}
+                for p in params:
+                    if p in injectable:
+                        kwargs[p] = injectable[p]
+
+                if not kwargs and len(params) == 2:
+                    return target_func(store, registry)
+
+                return target_func(**kwargs)
+
+            typed_execute = cast(TaskExecute, wrapped_execute)
+
+            return self._task_factory.create(task_name, task_code, task_description, task_props, cron_expr, load_on_start, typed_execute, target_func_name, self._executor)
         except Exception as e:
             logger.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")
             return None
@@ -290,4 +351,4 @@ class TaskRepository:
             if not task.is_still_valid():
                 self._code_registry.deregister(task.name, reason='ttl reached')
                 self._scan()
-                logger.info(f"Task '{task.name}' has expired and was removed from the registry.")
+                logger.info(f"Task '{task.name}' has expired and was removed from the registry")

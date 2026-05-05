@@ -173,7 +173,7 @@ class MDNSScanner:
                 url = self._build_discovered_url(host, info.port, path)
 
                 if self._is_valid_mcp_url(url):
-                    discovered[service_name] = ServiceConfig(name, MCP_SSE, url, True)
+                    discovered[service_name] = ServiceConfig(service_name, MCP_SSE, url, True)
                 else:
                     logger.warning(f"Skipping discovered service with invalid URL: {service_name} -> {url}")
 

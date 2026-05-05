@@ -3,9 +3,9 @@ from typing import Any
 from requests import Response
 
 
-class HttpClient(ABC):
+class HttpAdapter(ABC):
     """
-    The HTTP client supports local serives like Shelly devices and external
+    The HTTP client supports local services like Shelly devices and external
     services. Please ensure compliance with terms of use and privacy policies
     for external requests.
 
