@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from time import sleep
 from typing import Any, cast, Optional, List
+
+from subscription import SubscriptionService
 from task import TaskAdapter, TaskFactory, TaskExecute, when
 
 logger = logging.getLogger(__name__)
@@ -183,10 +185,11 @@ class CodeRepository:
 class TaskRepository:
     """Repository that periodically scans and loads tasks from a CodeRepository."""
 
-    def __init__(self, code_dir: str, task_factory: TaskFactory):
+    def __init__(self, code_dir: str, task_factory: TaskFactory, subscription_service: SubscriptionService):
         self.__is_running = False
         self._code_registry = CodeRepository(codedir=code_dir)
         self._task_factory = task_factory
+        self._subscription_service = subscription_service
         self.tasks: dict[str, TaskAdapter] = {}
         self._executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
         logger.info("TaskRepository initialized (Taskexecutor started)")
@@ -275,11 +278,16 @@ class TaskRepository:
 
         for name in new_task_names:
             task = current_tasks[name]
+
             if task.load_on_start:
                 logger.info(f"Task '{name}' added to registry (is marked to load on start. Triggering initial execution)")
                 task.safe_run()
             else:
                 logger.info(f"Task '{name}' added to registry")
+
+            if len(task.props_observed) > 0:
+                for prop_observed in task.props_observed:
+                    self._subscription_service.subscribe(prop_observed.service, prop_observed.prop, task)
 
 
     def _load_task(self, task_name: str, task_code: str, task_description: str, task_props: dict[str, Any]) -> TaskAdapter | None:
@@ -298,13 +306,17 @@ class TaskRepository:
 
             target_func = None
             cron_expr = None
+            props_observed = set()
             load_on_start = False
 
             for obj in namespace.values():
-                if callable(obj) and (hasattr(obj, "__openaction_rule_loaded__") or hasattr(obj, "__openaction_cron__")):
+                if callable(obj) and (hasattr(obj, "__openaction_rule_loaded__") or hasattr(obj, "__openaction_cron__") or hasattr(obj, "__openaction_property_changed__")):
                     target_func = obj
-                    cron_expr = getattr(obj, "__openaction_cron__", None)
                     load_on_start = getattr(obj, "__openaction_rule_loaded__", False)
+                    cron_expr = getattr(obj, "__openaction_cron__", None)
+                    prop_observed = getattr(obj, "__openaction_property_changed__", None)
+                    if prop_observed is not None:
+                        props_observed.add(prop_observed)
                     break
 
             if target_func is None:
@@ -341,7 +353,7 @@ class TaskRepository:
 
             typed_execute = cast(TaskExecute, wrapped_execute)
 
-            return self._task_factory.create(task_name, task_code, task_description, task_props, cron_expr, load_on_start, typed_execute, target_func_name, self._executor)
+            return self._task_factory.create(task_name, task_code, task_description, task_props, cron_expr, props_observed, load_on_start, typed_execute, target_func_name, self._executor)
         except Exception as e:
             logger.warning(f"Warning: Could not load task '{task_name}' from registry: {e}")
             return None

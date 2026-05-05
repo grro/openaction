@@ -18,6 +18,7 @@ from http_adapter_impl import HttpRegistry
 from mcp_adapter_impl import McpRegistry
 from services import ServiceRegistry, ServiceConfig, Configs
 from store_impl import SimpleStore
+from subscription import SubscriptionService
 from task import TaskFactory, TaskAdapter
 from task_repository import TaskRepository
 
@@ -77,12 +78,18 @@ class OpenActionServer:
         self.name = 'OpenAction'
         self.host = host
         self.port = port
-        self.service_registry = ServiceRegistry(configs, autoscan)
-        self.mcp_registry = McpRegistry(self.service_registry).start()
-        self.adapter_manager = AdapterManager({HttpRegistry.NAME: HttpRegistry(), McpRegistry.NAME: self.mcp_registry})
         self.store = SimpleStore(name="state", directory=dir)
-        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), TaskFactory(self.store, self.adapter_manager)).start()
-        self.cron = CronService(self.task_repository).start()
+        self.service_registry = ServiceRegistry(configs, autoscan)
+        self.mcp_registry = McpRegistry(self.service_registry)
+        self.adapter_manager = AdapterManager({HttpRegistry.NAME: HttpRegistry(), McpRegistry.NAME: self.mcp_registry})
+        self.subscription_service = SubscriptionService(self.adapter_manager)
+        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), TaskFactory(self.store, self.adapter_manager), self.subscription_service)
+        self.cron = CronService(self.task_repository)
+
+        self.mcp_registry.start()
+        self.task_repository.start()
+        self.subscription_service.start()
+        self.cron.start()
 
         self.mdns = MDNS()
         self.mcp = FastMCP(self.name)
@@ -221,10 +228,11 @@ class OpenActionServer:
             Multiple `@when` decorators can be applied to the same function.
 
             Supported Triggers:
-                * @when("Time cron <cron>"): The script is executed according to
-                  the provided cron expression.
                 * @when("Rule loaded"): The script is called after the execution
                   environment is restarted (may occur every few hours or days).
+                * @when("Time cron <cron>"): The script is executed according to
+                  the provided cron expression.
+                * @when("Prop sensor://metrics/grid_power changed")
 
             Example:
                 @when("Rule loaded")

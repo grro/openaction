@@ -29,7 +29,7 @@ class SyncMCPClient(MCPAdapter):
         self._client = None
         self._exit_stack = None
 
-        self._notification_callbacks: list[Callable[[Any], None]] = []
+        self._notification_callbacks: Dict[str, set[Callable[[Any], None]]] = dict()
 
         # Start the background thread exactly ONCE for the life of this client object
         self._loop = asyncio.new_event_loop()
@@ -80,31 +80,37 @@ class SyncMCPClient(MCPAdapter):
             self._thread.join()
 
 
-    def add_notification_listener(self, callback: Callable[[Any], None]):
+    def add_notification_listener(self, uri: str, callback: Callable[[Any], None]):
         """Registers a callback function to consume incoming MCP notifications."""
-        if callback not in self._notification_callbacks:
-            self._notification_callbacks.append(callback)
+        callbacks = self._notification_callbacks.get(uri, set())
+        callbacks.add(callback)
+        self._notification_callbacks[uri] = callbacks
 
-    def remove_notification_listener(self, callback: Callable[[Any], None]):
+
+    def remove_notification_listener(self, uri: str, callback: Callable[[Any], None]):
         """Removes a previously registered notification callback."""
-        if callback in self._notification_callbacks:
-            self._notification_callbacks.remove(callback)
+        callbacks = self._notification_callbacks.get(uri, set())
+        callbacks.remove(callback)
+        self._notification_callbacks[uri] = callbacks
+
+
 
     async def _internal_message_handler(self, message: Any):
         """
         Internal async handler passed to FastMCP. Routes incoming messages
         to all registered callbacks safely.
         """
-        for callback in self._notification_callbacks:
+
+        for name, callbacks in self._notification_callbacks.items():
             try:
-                if asyncio.iscoroutinefunction(callback):
-                    # Await async callbacks directly
-                    await callback(message)
-                else:
+                msg = str(message)
+                if name in msg:
                     # Run sync callbacks in an executor to prevent blocking the SSE event loop
-                    self._loop.run_in_executor(None, callback, message)
+                    for callback in callbacks:
+                        self._loop.run_in_executor(None, callback)
             except Exception as e:
                 logger.error(f"Error executing notification callback: {e}", exc_info=True)
+
 
     # ==========================================
     # Public synchronous API
@@ -126,10 +132,10 @@ class SyncMCPClient(MCPAdapter):
             self._disconnect()
             raise
 
-    def subscribe_resource(self, uri: str):
+    def subscribe_resource(self, uri: str, callback):
         self._ensure_connected()
         try:
-            # FastMCP exposes the low-level session for subscriptions
+            self.add_notification_listener(uri, callback)
             return self._run_sync(self._client.session.subscribe_resource(uri))
         except Exception as e:
             # Gracefully handle FastMCP servers that don't support explicit subscriptions
@@ -159,6 +165,11 @@ class SyncMCPClient(MCPAdapter):
 
     def __repr__(self) -> str:
         return f"SyncMCPClient(url='{self.url}')"
+
+
+
+
+
 
 
 class McpRegistry(Registry):

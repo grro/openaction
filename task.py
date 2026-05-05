@@ -5,7 +5,7 @@ from collections.abc import Callable
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from adapter_impl import AdapterManager
 from api.adapter import AdapterRegistry
@@ -17,13 +17,23 @@ logger = logging.getLogger(__name__)
 TaskExecute = Callable[[Store, AdapterRegistry], str]
 
 
+
+@dataclass(frozen=True)
+class Prop:
+    service: str
+    prop: str
+
+
+
 def when(target: str):
     """Decorator to define a task's trigger (cron, property change, etc.) and execution entry point."""
     def decorator(func):
         if not hasattr(func, "__openaction_cron__"):
             func.__openaction_cron__ = None
         if not hasattr(func, "__openaction_rule_loaded__"):
-            func.__openaction_rule_loaded__ = False
+            func.__openaction_service__ = None
+        if not hasattr(func, "__openaction_property_changed__"):
+            func.__openaction_property_changed__ = None
 
         # Support 'Time cron' OpenHab-style string and convert to linux 5-part if it's longer
         if target.upper().startswith("TIME CRON "):
@@ -46,8 +56,13 @@ def when(target: str):
         elif target.upper().startswith("RULE LOADED"):
             func.__openaction_rule_loaded__ = True
 
-        elif target.startswith("Item ") or target.startswith("Property ") or target.startswith("System ") or target.startswith("Rule "):
-            pass
+        elif target.upper().startswith("PROPERTY"):
+            parts = target[8:].strip().split()
+            entity = parts[0].strip()
+            op = parts[1].strip()
+
+            entity_parts = entity.split("#")
+            func.__openaction_property_changed__ = Prop(entity_parts[0].strip(), entity_parts[1].strip())
 
         return func
 
@@ -93,6 +108,7 @@ class TaskAdapter:
                  description: str,
                  props: Dict[str, Any],
                  cron_expression: str,
+                 props_observed: Set[Prop],
                  load_on_start: bool,
                  meth_to_execute: Callable[[Store, AdapterRegistry], str],
                  execute_name: str,
@@ -109,6 +125,7 @@ class TaskAdapter:
         self.function_name = execute_name
         self.load_on_start = load_on_start
         self.cron_expression = cron_expression
+        self.props_observed = props_observed
         self._executor = executor
         self.last_executions: List[TaskResult] = list()
         self.default_timeout_sec = 30
@@ -217,6 +234,7 @@ class TaskFactory:
                description: str,
                props: Dict[str, Any],
                cron_expression: str,
+               props_observed: Set[Prop],
                load_on_start: bool,
                execute: Callable[[Store, AdapterRegistry], str],
                execute_name: str,
@@ -226,6 +244,7 @@ class TaskFactory:
                            description,
                            props,
                            cron_expression,
+                           props_observed,
                            load_on_start,
                            execute,
                            execute_name,
