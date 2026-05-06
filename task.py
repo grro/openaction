@@ -118,9 +118,6 @@ class Task:
             logger.error(f"Syntax error in task '{self.name}': {e}")
             raise
 
-    def __str__(self) -> str:
-        return f"Task(name={self.name}, state={self.state})"
-
     def _add_task_result(self, task_result: TaskResult):
         self.last_executions.append(task_result)
         if len(self.last_executions) > 10:
@@ -273,6 +270,62 @@ class Task:
             raise e
 
         return output_buffer.getvalue()
+
+    def __str__(self) -> str:
+        type_flag = "🧪 TEST" if getattr(self, 'is_test_task', False) else "🛡️ PROD"
+
+        # 1. Header
+        lines = [f"Task [{type_flag}] | '{self.name}' | State: {self.state.upper()}"]
+
+        # 2. Configuration Section
+        triggers = []
+        if getattr(self, 'cron_expression', None):
+            triggers.append(f"cron({self.cron_expression})")
+        if getattr(self, 'props_observed', None):
+            triggers.append(f"subs({len(self.props_observed)})")
+        if getattr(self, 'run_on_start', False):
+            triggers.append("on_start")
+
+        trigger_str = " + ".join(triggers) if triggers else "manual_only"
+
+        lines.append("--- Configuration ---")
+        lines.append(f"  | Configured: {trigger_str}")
+        lines.append(f"  | Timeout:    {self.props.get('timeout', self.default_timeout_sec)}s")
+
+        # 3. Last Execution Section
+        lines.append("--- Last Execution ---")
+        if not self.last_executions:
+            lines.append("  | Never executed")
+        else:
+            last_run = self.last_executions[-1]
+            status = "❌ FAILED" if last_run.error else "✅ SUCCESS"
+            run_date = last_run.date.strftime("%Y-%m-%d %H:%M:%S")
+
+            # Extract the trigger used for this specific run
+            trigger_used = getattr(last_run, 'trigger', 'unknown')
+
+            lines.append(f"  | Status:     {status} ({last_run.elapsed.total_seconds():.3f}s) at {run_date}")
+            lines.append(f"  | Fired By:   '{trigger_used}'")
+
+            # Show up to 3 lines of error
+            if last_run.error:
+                lines.append("  | Error:")
+                err_lines = str(last_run.error).strip().splitlines()
+                for line in err_lines[:3]:
+                    lines.append(f"  |   {line}")
+                if len(err_lines) > 3:
+                    lines.append("  |   ... (truncated)")
+
+            # Show up to 3 lines of output
+            elif last_run.output:
+                lines.append("  | Output:")
+                out_lines = str(last_run.output).strip().splitlines()
+                for line in out_lines[:3]:
+                    lines.append(f"  |   {line}")
+                if len(out_lines) > 3:
+                    lines.append("  |   ... (truncated)")
+
+        return "\n".join(lines)
 
 
 class TaskFactory:
