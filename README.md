@@ -2,7 +2,7 @@
 
 **OpenAction** is an AI-native orchestration framework for the Agentic Home.
 
-Move beyond rigid "If-This-Then-That" rules and tedious UI-based configurations. Powered by AI agent technology, 
+Move beyond rigid "If-This-Then-That" rules and tedious UI-based configurations. Powered by AI agent technology,
 OpenAction replaces traditional smart home solutions with flexible, adaptive logic. It translates natural language
 intent into dynamic, executable scripts — giving your smart home the ability to adapt, reason, and act.
 

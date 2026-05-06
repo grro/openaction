@@ -1,15 +1,16 @@
 import os
 import asyncio
 import logging
-import threading
+import importlib.metadata
 import socket
 from pathlib import Path
 from time import sleep
-from typing import List, Dict, Any, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 
 import sys
-from fastmcp import FastMCP, Context
+from fastmcp import FastMCP
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
 from adapter_impl import AdapterManager
@@ -19,7 +20,7 @@ from mcp_adapter_impl import McpRegistry
 from services import ServiceRegistry, ServiceConfig, Configs
 from store_impl import SimpleStore
 from subscription import SubscriptionService
-from task import TaskFactory, TaskAdapter
+from task import TaskFactory
 from task_repository import TaskRepository
 
 
@@ -83,7 +84,9 @@ class OpenActionServer:
         self.mcp_registry = McpRegistry(self.service_registry)
         self.adapter_manager = AdapterManager({HttpRegistry.NAME: HttpRegistry(), McpRegistry.NAME: self.mcp_registry})
         self.subscription_service = SubscriptionService(self.adapter_manager)
-        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), TaskFactory(self.store, self.adapter_manager), self.subscription_service)
+        self.executors = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
+        self.task_factory = TaskFactory(self.store, self.adapter_manager, self.executors)
+        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), self.task_factory, self.store, self.adapter_manager, self.subscription_service)
         self.cron = CronService(self.task_repository)
 
         self.mcp_registry.start()
@@ -94,6 +97,29 @@ class OpenActionServer:
         self.mdns = MDNS()
         self.mcp = FastMCP(self.name)
         self.loop = asyncio.new_event_loop()
+
+
+        @self.mcp.tool()
+        def list_available_modules() -> str:
+            """
+            Lists all available (installed) Python modules and their versions in the current environment.
+            """
+            try:
+                # Use importlib.metadata to get all installed distributions
+                dists = importlib.metadata.distributions()
+                modules = sorted([f"{dist.metadata['Name']}=={dist.version}" for dist in dists if dist.metadata['Name']])
+
+                if not modules:
+                    return "No Python modules found."
+
+                output = ["### Installed Python Modules", "===========================\n"]
+                output.extend([f"• `{mod}`" for mod in modules])
+
+                return "\n".join(output)
+            except Exception as e:
+                logger.error(f"Failed to list modules: {e}", exc_info=True)
+                return f"Error: Could not retrieve the list of installed modules: {str(e)}"
+
 
         @self.mcp.tool()
         def list_api() -> str:
@@ -144,6 +170,95 @@ class OpenActionServer:
             except Exception as e:
                 # Providing the exception type makes debugging significantly easier
                 return f"Error reading API directory: {type(e).__name__} - {e}"
+
+
+        @self.mcp.tool()
+        def register_task(name: str,
+                          script: str,
+                          description: str,
+                          subscriptions: Optional[List[str]] = None,
+                          cron: Optional[str] = None,
+                          run_on_start: bool = False) -> str:
+            """
+            Registers a new permanent Python-based task
+
+            Args:
+                name (str): A unique, URI-safe identifier (alphanumeric, hyphens, underscores, or dots).
+                    Note: Production tasks MUST NOT start with the 'test_' prefix.
+                script (str): The procedural Python source code to execute.
+                    Constraint: Consolidate all logic for a specific device (e.g., a single heater
+                    or roller shutter) into one script rather than creating multiple fragmented tasks.
+                description (str): A brief, clear explanation of the task's logic and purpose.
+
+                --- Trigger Configurations ---
+                subscriptions (list of str, optional): Notification-based trigger. A list of
+                    identifiers (e.g., MCP resource URIs). If provided, the task subscribes to
+                    these properties for real-time, event-driven execution.
+                cron (str, optional): Clock-based trigger. A standard cron expression defining
+                    a recurring execution schedule.
+                run_on_start (bool): Startup trigger. If True, the task executes immediately
+                    upon registration or system boot.
+
+            Returns:
+                str: A confirmation message indicating the registration status.
+
+            ==============================
+            SCRIPT EXECUTION ENVIRONMENT
+            ==============================
+
+            The script is executed as a procedural block. The following objects are
+            injected automatically into the global scope:
+
+                1. `store`: A persistence object for maintaining state across execution cycles.
+                   E.g. use this to cache values and minimize redundant external service calls.
+                2. `registry`: A centralized manager used to retrieve specific adapters
+                   (e.g., `registry.get_adapter("http_adapter")`).
+
+
+            ==============================
+            MANDATORY PROTOCOLS
+            ==============================
+
+            Error Handling & Retries:
+                The script MUST evaluate all external service responses for error states.
+                If a failure occurs, an Exception MUST be raised. This ensures the system
+                triggers the automatic retry logic (1-minute delay).
+
+            Validation & Consolidation (Required):
+                1. Check Existing: Verify if a task already exists for the target device.
+                   If found, MERGE your logic into the existing script.
+                2. Test-First: You MUST use the `execute_task` tool to validate your script
+                   logic and JSON parsing BEFORE calling `register_task`.
+            """
+
+            # Guard clause: Ensure the user isn't trying to deploy a test script permanently
+            if name.startswith("test_"):
+                return (
+                    "Error: Validation failed. Production tasks cannot start with 'test_'. "
+                    "If you are trying to test a script, use the `execute_task` tool instead."
+                )
+
+            # Normalize defaults to prevent NoneType errors downstream
+            subs = subscriptions if subscriptions is not None else []
+
+            try:
+                self.task_repository.register(
+                    name=name,
+                    code=script,
+                    description=description,
+                    cron=cron,
+                    subscriptions=subs,
+                    run_on_start=run_on_start,
+                    ttl=None,
+                    is_test=False
+                )
+
+                logger.info(f"Production Task '{name}' registered successfully.")
+                return f"Success: Task '{name}' has been successfully registered as a persistent production task."
+
+            except Exception as e:
+                logger.error(f"Failed to register task '{name}': {e}", exc_info=True)
+                return f"Error: An internal error occurred during registration: {type(e).__name__} - {str(e)}"
 
 
         @self.mcp.tool()
@@ -199,117 +314,6 @@ class OpenActionServer:
 
         # Expose this function as a callable tool over the Model Context Protocol
         @self.mcp.tool()
-        def register_task(name: str, script: str, description: str, is_test: bool, ttl:int = None) -> str:
-            """
-            Registers a new Python-based task via the MCP interface.
-
-            Args:
-                name (str): The unique identifier for the task. Must be URI-safe
-                    (alphanumeric, hyphens, underscores, or dots).
-                    A test task name must start with 'test_' and include a `ttl`
-                script (str): The Python source code to be executed. Note: Consolidate
-                    the logic for a specific device (e.g., a single heater or roller
-                    shutter) into a single task script rather than creating multiple.
-                description (str): A brief explanation of what the task does.
-                is_test (bool): Flag to distinguish between temporary validation and
-                    permanent deployment.
-                ttl (int, optional): The "Time To Live" in seconds. This is used for
-                    test tasks only. Test tasks should always be created with a TTL
-                    greater than 900 (15 min) to avoid orphaned processes
-
-            Returns:
-                str: A confirmation message indicating the registration status.
-
-            ====================
-            SCRIPT REQUIREMENTS
-            ====================
-            The provided `script` MUST define a single execution function decorated with
-            one or more `@when` triggers. It is standard practice to name this function `execute`.
-
-            Supported Triggers:
-                * @when(trigger="Rule loaded"): Fires when the execution environment
-                  restarts or the task is first registered.
-                * @when(trigger="Time cron <cron_expression>"): Executes based on a
-                  standard cron schedule.
-                * @when(trigger="Property <uri> changed", min_interval_sec=X): Fires when
-                  a specific resource value changes, with a throttle (default is 5 sec).
-
-            Guidance: Prefer event-based triggering (`Property changed`) supplemented by
-                cron-based triggering to ensure state consistency.
-
-            Example:
-                @when(trigger="Rule loaded")
-                @when(trigger="Time cron */5 * * * *")
-                @when(trigger="Property Energy#sensor://metrics/available_surplus changed", min_interval_sec=10)
-                def execute(store, adapter_registry):
-                    # Your logic here
-                    return "Success: heater power reduced by 100W"
-
-            Available Environment (injected automatically based on parameter names):
-                The 'Store' and the 'ADapterRegistry' are injected automatically.
-                For the execution to functioncorrectly, you MUST list exactly these two
-                environment  as arguments in the specific order shown below:
-
-                1. `store` (Store): A persistence service used to maintain state across execution
-                   cycles. It is commonly used for caching values to avoid redundant
-                   high-frequency calls to external services.
-                3. `adapter_registry`: A centralized registry for retrieving concrete
-                    adapters (e.g., http_adapter, mcp_adapter).
-
-                Note: No imports are required for the `@when` decorator or the
-                injected environment.
-
-            Mandatory Error Handling:
-            The script must implement robust error handling. Responses from external clients
-            and services MUST be explicitly evaluated for error states. If an error occurs,
-            an Exception MUST be raised. Raising an exception ensures the system will
-            automatically retry the task 1 minute later.
-
-            Validation & Consolidation Protocol (Mandatory):
-                1. Check Existing: Verify no script already exists managing the same device.
-                   If one exists, MERGE your logic into the existing task.
-                2. Test First: Register a temporary test task (is_test=True).
-                3. Naming: The test task name MUST start with 'test_' and include a `ttl`.
-                4. Verify: Trigger execution manually via the `execute_task_now` tool and
-                   ensure all JSON response structures are correctly handled.
-                5. Cleanup: Delete the test task after validation.
-            """
-
-
-            if is_test:
-                # Rule 1: Test tasks must start with 'test_'
-                if not name.startswith("test_"):
-                    return f"Error: Validation failed. Test task names must start with 'test_'. Received: '{name}'"
-
-                # Rule 2: Test tasks must have a TTL
-                if ttl is None:
-                    return "Error: Validation failed. Test tasks (is_test=True) must include a 'ttl' value."
-
-                # Rule 3: Minimum TTL of 900 seconds (15 minutes)
-                if ttl < 900:
-                    return f"Error: Validation failed. Test task 'ttl' must be at least 900 seconds to prevent orphaned processes. Received: {ttl}"
-            else:
-                # Rule 4: Production tasks should not start with 'test_' to avoid confusion
-                if name.startswith("test_"):
-                    return f"Error: Validation failed. Production tasks (is_test=False) should not start with 'test_'."
-
-            try:
-                self.task_repository.register(name, script, description, ttl, is_test)
-
-                if ttl is None:
-                    logger.info(f"Production Task '{name}' registered successfully.")
-                    return f"Task '{name}' has been successfully registered as a persistent production task."
-                else:
-                    logger.info(f"Test Task '{name}' registered successfully with ttl={ttl}s.")
-                    return f"Test task '{name}' has been successfully registered and will be removed in {ttl} seconds."
-
-            except Exception as e:
-                logger.error(f"Failed to register task '{name}': {e}", exc_info=True)
-                return f"Error: An internal error occurred during registration: {type(e).__name__} - {str(e)}"
-
-
-        # Expose this function as a callable tool over the Model Context Protocol
-        @self.mcp.tool()
         def deregister_task(name: str, reason: str) -> str:
             """
             Deregisters and removes a previously registered task.
@@ -355,145 +359,111 @@ class OpenActionServer:
         @self.mcp.tool()
         def get_task(name: str) -> str:
             """
-            Retrieves detailed information, source code, and validation status for a specific task.
+            Retrieves detailed metadata, execution history, and source code for a specific task.
             """
             try:
                 task = self.task_repository.tasks.get(name)
-
                 if not task:
                     return f"Error: Task '{name}' is not currently registered."
 
-                output = [f"### Task Overview: {task.name}", "=================\n"]
+                is_test = task.is_test_task
+                type_label = "🧪 [TEST TASK]" if is_test else "🛡️ [PERMANENT]"
 
-                # Explicitly show if this is a test task
-                is_test = getattr(task, 'is_test_task', False)
-                output.append(f"**Type:** {'Temporary Test Task' if is_test else 'Permanent Deployment'}")
-                output.append(f"**Description:** {task.description}\n")
-                output.append(f"**State:** {task.state}\n")
+                # We'll use 'lines' to build the report to avoid shadowing 'run.output'
+                lines = [
+                    f"## {type_label} {task.name}",
+                    f"**Description:** {task.description}",
+                    f"**Current State:** `{task.state}`",
+                    ""
+                ]
 
-                # Handle stored task state
-                task_data = task.data()
-                if task_data:
-                    output.append("**Stored Data:**")
-                    for k, v in task_data.items():
-                        v_str = str(v)
-                        if len(v_str) > 400:
-                            v_str = v_str[:397] + "..."
-                        output.append(f"  - `{k}`: `{v_str}`")
-                    output.append("")
-
-                    # Handle execution history
+                # History Section
                 if not task.last_executions:
-                    output.append("**Last Results:** Never executed\n")
+                    lines.append("### 🕒 History\n- *Never executed*\n")
                 else:
-                    output.append("**Last Results:**")
-                    for run in reversed(task.last_executions):
-                        timestamp = "n/a" if run.date is None else run.date.isoformat()
-                        result_text = run.result if run.error is None else f"ERROR: {run.error}"
+                    lines.append("### 🕒 Recent Executions (Latest First)")
+                    for run in list(reversed(task.last_executions))[:5]:
+                        ts = run.date.strftime("%Y-%m-%d %H:%M:%S")
 
-                        if len(result_text) > 600:
-                            result_text = result_text[:597] + "..."
-                        output.append(f"  - `{timestamp}`: {result_text}")
-                    output.append("")
+                        # FIX: run.error is now a string, so we just check if it exists
+                        status = "✅ OK" if run.error is None else "❌ ERROR"
+                        duration = f"{run.elapsed.total_seconds():.2f}s"
 
-                output.append("**Source Code:**")
-                output.append(f"```python\n{task.code}\n```")
-                output.append("---\n")
+                        # FIX: Extract trigger (using getattr as a safety net for backwards compatibility)
+                        trigger = getattr(run, 'trigger', 'unknown')
 
-                return "\n".join(output)
+                        # Added trigger visually into the history bullet point
+                        lines.append(f"- **{ts}** | ⚡ `{trigger}` | {status} ({duration})")
+
+                        if run.error:
+                            lines.append(f"  - `Detail: {run.error}`")
+                        elif run.output:
+                            display_out = (run.output[:597] + "...") if len(run.output) > 600 else run.output
+                            # Handle newlines gracefully so output doesn't break Markdown formatting
+                            indented_out = display_out.replace('\n', '\n    ')
+                            lines.append(f"  - `Output:\n    {indented_out}`")
+                    lines.append("")
+
+                lines.append("### 📝 Source Code")
+                lines.append(f"```python\n{task.code.strip()}\n```")
+
+                return "\n".join(lines)
 
             except Exception as e:
                 logger.error(f"Failed to retrieve task '{name}': {e}", exc_info=True)
-                return f"Error: Could not retrieve task '{name}'. Check server logs."
+                return f"Error: Internal server error while retrieving task '{name}'."
 
 
         @self.mcp.tool()
-        def execute_task_now(name: str) -> str:
+        def execute_task(name: str, code: str) -> str:
             """
-            Triggers the immediate manual execution of a registered task.
-
-            Please note that a `@when` statement has to be present on the task
-            for it to be recognized. Typically, `@when("Rule loaded")` is used.
+            Creates an ephemeral test task and executes it immediately.
+            Use this to validate logic, check service responses, and debug scripts
+            before permanent registration.
 
             Args:
-                name (str): The unique name of the task to be executed.
+                name: A unique name for this test execution (e.g., 'test_light_check').
+                code: The procedural Python code to execute.
 
             Returns:
-                str: A formatted string containing the execution status, timestamp
-                     (if available), and a truncated result (up to 300 characters).
-                     Returns an error message if the task is not found or fails.
+                str: A detailed report of the execution outcome, including results or errors.
             """
+
+            test_name = name if name.startswith("test_") else f"test_{name}"
+
             try:
-                # Find the task by name in the registry
-                task_to_execute: TaskAdapter | None = None
+                # 1. Create a temporary task instance
+                task = self.task_factory.create(
+                    name=test_name,
+                    code=code,
+                    description=f"Manual execution trigger: {datetime.now().isoformat()}",
+                    cron_expression=None,
+                    subscriptions=[],
+                    run_on_start=False,
+                    ttl=3600,
+                    is_test=True
+                )
 
-                # Note: Assuming self.task_registry.tasks is a dict, we iterate over .values()
-                for task in self.task_repository.tasks.values():
-                    if hasattr(task, 'name') and task.name == name:
-                        task_to_execute = task
-                        break
+                logger.info("Executing ephemeral task '%s'", test_name)
 
-                if task_to_execute is None:
-                    available_tasks = [t.name for t in self.task_repository.tasks.values() if hasattr(t, 'name')]
-                    return f"Error: Task '{name}' not found in registry. Available tasks: {available_tasks}"
+                # 2. Run the task (returns a TaskResult object)
+                result = task.run(trigger="manual_test")
 
-                # Execute the task immediately and capture the result
-                raw_result = task_to_execute.run()
+                # 3. Build the response utilizing the TaskResult's built-in formatting
+                response = [
+                    f"### Execution Report: {test_name}",
+                    "---",
+                    str(result)
+                ]
 
-                # Limit the result output to 300 characters to prevent log/token flooding
-                result_str = str(raw_result)
-                logger.info(f"Task '{name}' executed \nResult: {result_str}")
+                final_output = "\n".join(response)
 
-                # Format execution timestamp if available
-                timestamp = getattr(task_to_execute, 'last_execution', None)
-                if timestamp:
-                    return f"Task '{name}' executed at {timestamp.isoformat()}.\nResult: {result_str}"
-                else:
-                    return f"Task '{name}' executed \nResult: {result_str}"
+                logger.info(f"Executed test script {test_name}:\n{final_output}")
+                return final_output
 
             except Exception as e:
-                logger.error(f"Failed to execute task '{name}': {e}", exc_info=True)
-                return f"Error: Failed to execute task '{name}': {str(e)}"
-
-        @self.mcp.tool()
-        def run_backup() -> str:
-            """
-            Creates a backup of all registered task scripts and descriptions.
-            """
-            try:
-                # Call the backup method we implemented in the CodeRegistry
-                backup_path = self.task_repository.backup()
-
-                if backup_path:
-                    return f"Successfully created backup of all tasks. File saved at: {backup_path}"
-                else:
-                    return "Error: Backup process failed. Please check the server logs for details."
-
-            except Exception as e:
-                logger.error(f"Failed to execute backup_tasks tool: {e}", exc_info=True)
-                return f"Error: Failed to create backup: {str(e)}"
-
-
-        @self.mcp.tool()
-        def list_backups() -> str:
-            """
-            Lists all existing backup files of registered tasks.
-            """
-            try:
-                backups = self.task_repository.list_backup()
-
-                if not backups:
-                    return "No backups found. Create a backup using the 'run_backup' tool."
-
-                output = ["Available Backups:", "=================\n"]
-                for i, backup in enumerate(backups, 1):
-                    output.append(f"{i}. {backup}")
-
-                return "\n".join(output)
-
-            except Exception as e:
-                logger.error(f"Failed to list backups: {e}", exc_info=True)
-                return f"Error: Could not retrieve backup list: {str(e)}"
+                logger.error(f"Failed to initialize or run task '{name}': {e}", exc_info=True)
+                return f"Error: Critical failure during task setup: {type(e).__name__}: {str(e)}"
 
 
         @self.mcp.tool()
@@ -578,6 +548,10 @@ class OpenActionServer:
 
 
     def stop(self):
+        self.cron.stop()
+        self.subscription_service.stop()
+        self.task_repository.stop()
+        self.mcp_registry.stop()
         self.mdns.unregister_mdns(self.name)
         if self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
@@ -593,8 +567,6 @@ def run_server(port: int, dir, configs: Dict[str, ServiceConfig], autoscan: bool
     except KeyboardInterrupt:
         logger.info('Stopping the server...')
         mcp_server.stop()
-
-
 
 
 if __name__ == '__main__':

@@ -3,10 +3,10 @@ from abc import ABC, abstractmethod
 from threading import Thread
 from time import sleep
 from datetime import datetime, timedelta
-from typing import Set, Callable
+from typing import Set
 
 from api.adapter import AdapterRegistry
-from task import TaskAdapter
+from task import Task
 
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class Subscription(ABC):
-    def __init__(self, service_name: str, uri: str, min_interval_sec: int, task: TaskAdapter):
+    def __init__(self, service_name: str, uri: str, min_interval_sec: int, task: Task):
         self.service_name = service_name
         self.uri = uri
         self.task = task
@@ -33,7 +33,7 @@ class Subscription(ABC):
         if self.last_notification > datetime.now() - timedelta(seconds=self.min_interval_sec):
             try:
                 self.last_notification = datetime.now()
-                self.task.safe_run()
+                self.task.run("subscription")
             except Exception as e:
                 logger.warning(f"Error in subscription callback for {self.service_name}: {e}")
 
@@ -43,7 +43,7 @@ class Subscription(ABC):
 
 
 class McpSubscription(Subscription):
-    def __init__(self, service_name: str, uri: str,  min_interval_sec: int, task: TaskAdapter):
+    def __init__(self, service_name: str, uri: str, min_interval_sec: int, task: Task):
         super().__init__(service_name, uri, min_interval_sec, task)
 
     def subscribe(self, registry: AdapterRegistry):
@@ -92,7 +92,7 @@ class SubscriptionService:
 
             sleep(60)
 
-    def subscribe(self, service: str, prop: str, min_interval_sec: int, task: TaskAdapter):
+    def subscribe(self, service: str, prop: str, min_interval_sec: int, task: Task):
         """Creates and registers a new subscription."""
         subscription = McpSubscription(service, prop, min_interval_sec, task)
         self._subscriptions.add(subscription)

@@ -17,3 +17,4 @@ RUN pip install -r requirements.txt
 
 CMD ["sh", "-c", "python /etc/app/openaction.py \"$port\" \"$dir\" \"$mcp_config\" \"$relay_config\" \"$autoscan\""]
 
+

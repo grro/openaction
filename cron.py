@@ -1,11 +1,10 @@
 import logging
-from concurrent.futures.thread import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Thread
 from time import sleep
-from typing import Dict
+from typing import Dict, Optional
 
-from task import TaskAdapter, TaskFactory
+from task import Task
 from task_repository import TaskRepository
 
 
@@ -38,7 +37,7 @@ class CronService:
             for task in list(self._task_repository.tasks.values()):
                 try:
                     if self._should_run(task, now, run_key):
-                        task.safe_run()
+                        task.safe_run("cron")
                 except Exception:
                     logger.exception(f"Error triggering task: {task.name}")
 
@@ -47,7 +46,7 @@ class CronService:
             sleep(sleep_time)
 
 
-    def _should_run(self, task: TaskAdapter, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
+    def _should_run(self, task: Task, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
         if task.cron_expression is None:
             return False
         # If task failed recently, wait 1 minute before retrying
@@ -78,7 +77,7 @@ class CronService:
         for field, (minimum, maximum) in zip(fields, ranges, strict=True):
             self._parse_field(field, minimum, maximum)
 
-    def _matches(self, expression: str, now: datetime) -> bool:
+    def _matches(self, expression: Optional[str], now: datetime) -> bool:
         """Splits the cron expression and evaluates each field."""
         if not expression:
             return False

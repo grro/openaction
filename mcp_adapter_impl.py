@@ -5,15 +5,11 @@ from contextlib import AsyncExitStack
 from threading import Thread
 from time import sleep
 from typing import Dict, Optional, Callable, Any
-from datetime import datetime
 from fastmcp import Client
 
-from api.adapter import AdapterRegistry
 from api.mcp_adapter import MCPAdapter
 from adapter_impl import Registry
 from services import MCP_SSE, ServiceRegistry
-from subscription import Subscription
-from task import TaskAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +186,7 @@ class McpRegistry(Registry):
         Thread(target=self._loop, daemon=True).start()
         return self
 
-    def close(self):
+    def stop(self):
         self.is_running = False
         self._service_registry.remove_listener(self._refresh)
         for client in self._mcp.values():
@@ -199,22 +195,29 @@ class McpRegistry(Registry):
 
     def __del__(self):
         try:
-            self.close()
+            self.stop()
         except Exception:
             pass
 
     def get_adapter(self, name: Optional[str] = None) -> Optional[Any]:
         """
-        Retrieves a specific MCP client by name.
+        Retrieves a specific MCP client by name (case-insensitive).
 
-        Note: This specific registry currently does not define a 'default'
-        adapter if name is None.
+        Returns None if the name is not provided or if no adapter matches.
         """
-        if name is None:
-            logger.warning("McpRegistry: No name provided, and no default MCP client configured.")
+        if not name:
+            logger.warning("McpRegistry: No adapter name provided.")
             return None
 
-        return self._mcp.get(name)
+        normalized_mcp = {k.upper(): v for k, v in self._mcp.items()}
+        adapter = normalized_mcp.get(name.upper())
+
+        if not adapter:
+            logger.warning(f"McpRegistry: No adapter found matching name '{name}'.")
+            return None
+
+        return adapter
+
 
     def _loop(self):
         while self.is_running:
