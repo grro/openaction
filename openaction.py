@@ -102,24 +102,53 @@ class OpenActionServer:
         @self.mcp.tool()
         def list_available_modules() -> str:
             """
-            Lists all available (installed) Python modules and their versions in the current environment.
+            Lists the current Python version and all external third-party Python packages installed.
+            Use this to determine environment capabilities and which libraries can be imported inside tasks.
             """
             try:
-                # Use importlib.metadata to get all installed distributions
+                # Fetch the clean Python version string (e.g., "3.11.4")
+                python_version = sys.version.split()[0]
+
+                # Retrieve all installed distributions
                 dists = importlib.metadata.distributions()
-                modules = sorted([f"{dist.metadata['Name']}=={dist.version}" for dist in dists if dist.metadata['Name']])
 
-                if not modules:
-                    return "No Python modules found."
+                # Extract name and version, filtering out empty names
+                packages = [
+                    (dist.metadata['Name'], dist.version)
+                    for dist in dists
+                    if dist.metadata.get('Name')
+                ]
 
-                output = ["### Installed Python Modules", "===========================\n"]
-                output.extend([f"• `{mod}`" for mod in modules])
+                # 1. Environment Header
+                report = [
+                    f"### 🐍 Python Environment: `v{python_version}`",
+                    "---"
+                ]
 
-                return "\n".join(output)
+                # 2. Package List
+                if not packages:
+                    report.append("No external Python packages found in the current environment.")
+                else:
+                    # Sort case-insensitively for better readability
+                    packages.sort(key=lambda x: x[0].lower())
+
+                    report.extend([
+                        "### 📦 Available External Packages",
+                        "> **Important Notes for Scripting:**",
+                        "> 1. **Standard Libraries:** All built-in Python modules for this version (e.g., `json`, `datetime`, `math`, `re`, `urllib`) are implicitly available and are *not* listed below.",
+                        "> 2. **Import Names:** The names below are package distribution names. The actual import statement might differ slightly (e.g., package `PyYAML` is imported as `yaml`).",
+                        ""
+                    ])
+
+                    # Format cleanly. E.g., "- **requests** (v2.31.0)"
+                    report.extend([f"- **`{name}`** `(v{version})`" for name, version in packages])
+
+                return "\n".join(report)
+
+        
             except Exception as e:
                 logger.error(f"Failed to list modules: {e}", exc_info=True)
-                return f"Error: Could not retrieve the list of installed modules: {str(e)}"
-
+                return f"Error: Could not retrieve the environment details: {type(e).__name__} - {str(e)}"
 
         @self.mcp.tool()
         def list_api() -> str:
@@ -285,7 +314,6 @@ class OpenActionServer:
                 str: A formatted list containing service names, protocols, endpoints, and reachability status.
             """
             try:
-                # Pythonic check for an empty registry
                 if not self.service_registry.registered_services:
                     return "Environment Empty: No external services are currently configured."
 
