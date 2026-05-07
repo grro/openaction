@@ -1,25 +1,22 @@
 import logging
 import requests
+from abc import ABC, abstractmethod
 from time import sleep
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Thread
-from typing import Dict, Optional
-from urllib.parse import urlparse, urlunparse
-from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+from typing import Dict, Set, List
+from mdns import MDNSScanner
+
 
 logger = logging.getLogger(__name__)
 
 
-MCP_SSE = 'MCP_SSE'
-SHELLY = 'SHELLY'
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class ServiceConfig:
     name: str
     type: str
-    url: str
-    auto_scanned: bool
+    url: str = field(compare=False)
+    auto_scanned: bool = field(compare=False)
 
     @staticmethod
     def read(conf: str):
@@ -31,7 +28,6 @@ class ServiceConfig:
         except Exception as e:
             logger.warning(f"Failed to parse service config entry '{conf}': {e}")
         return None
-
 
 
 class Configs:
@@ -49,19 +45,43 @@ class Configs:
 
 
 
+class Scanner(ABC):
+
+    @abstractmethod
+    def scan(self) -> Set[ServiceConfig]:
+        pass
+
+
+
 class ServiceRegistry:
 
-    def __init__(self, configs: Dict[str, ServiceConfig], autoscan: bool):
+    def __init__(self, manual_configs: Dict[str, ServiceConfig], scanner: List[Scanner]):
         self._is_running = True
         self._listeners = set()
-        self.autoscan = autoscan
+        self.scanner: Dict[Scanner, Dict[str, ServiceConfig]] = {s: dict() for s in scanner}
         self.reachable_services = set()
-        self.registered_services = {name: config for name, config in configs.items()}
-        logger.info(f"ServiceRegistry initialized. Autoscan is {'ON' if autoscan else 'OFF'}, {len(self.registered_services)} manually configured services.")
-        for name, config in self.registered_services.items():
-            logger.info(f"  - {name} [{config.type}]: {config.url}")
+        self.manual_configs = manual_configs
+
+        if len(manual_configs) > 0:
+            logger.info("manual configs")
+            for name, config in self.manual_configs.items():
+                logger.info(f"  - {name} [{config.type}]: {config.url}")
 
         Thread(target=self.__loop, daemon=True).start()
+
+
+    @property
+    def registered_services(self) -> Dict[str, ServiceConfig]:
+        srvs = dict(self.manual_configs)
+        for scanner, detected in self.scanner.items():
+            for name, config in detected.items():
+                if name not in srvs.keys():
+                    srvs[name] = config
+        return srvs
+
+    @property
+    def autoscan(self) -> bool:
+        return len(self.scanner) > 0
 
     def add_listener(self, listener):
         self._listeners.add(listener)
@@ -93,14 +113,12 @@ class ServiceRegistry:
 
     def _autoscan(self) -> bool:
         updates = False
-        discovered = MDNSScanner().scan()
-        for name, conf in discovered.items():
-            if name.upper() == 'OPENACTION':
-                continue
-            if name not in self.registered_services:
-                logger.info(f"Auto-discovered service: '{name}' [{conf.type}] at {conf.url}")
-                self.registered_services[name] = conf
-                updates = True
+        for scanner, detected in self.scanner.items():
+            for config in scanner.scan():
+                if config.name not in detected.keys():
+                    logger.info(f"Auto-discovered service: '{config.name}' [{ config.type.upper()}] at {config.url}")
+                    detected[config.name] = config
+                    updates = True
         return updates
 
     def _update_reachability(self) -> bool:
@@ -128,78 +146,3 @@ class ServiceRegistry:
             logger.debug(f"Reachability check failed for {url}: {type(e).__name__}")
         return False
 
-
-
-
-
-
-class MDNSScanner:
-    """
-    A utility class for discovering Model Context Protocol (MCP) servers
-    on the local network using mDNS (Zeroconf).
-    """
-
-    def scan(self, timeout_seconds: float = 1.5) -> Dict[str, ServiceConfig]:
-        """
-        Performs a brief, synchronous scan for mDNS services matching the MCP type.
-        """
-        logger.debug(f"Starting mDNS scan for {timeout_seconds} seconds...")
-        service_type = "_mcp._tcp.local."
-        discovered: Dict[str, ServiceConfig] = {}
-
-        class MCPListener(ServiceListener):
-            def __init__(self, parent_scanner):
-                self.scanner = parent_scanner
-
-            def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                self._process(zc, type_, name)
-
-            def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                self._process(zc, type_, name)
-
-            def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-                pass
-
-            def _process(self, zc: Zeroconf, type_: str, name: str) -> None:
-                info = zc.get_service_info(type_, name)
-                if not info or not info.parsed_addresses() or info.port is None:
-                    return
-
-                host = info.parsed_addresses()[0]
-                path_raw = info.properties.get(b"path", b"/sse").decode("utf-8", errors="ignore")
-                path = path_raw if path_raw.startswith("/") else f"/{path_raw}"
-
-                service_name = name.replace(f".{type_}", "").strip()
-                url = self._build_discovered_url(host, info.port, path)
-
-                if self._is_valid_mcp_url(url):
-                    discovered[service_name] = ServiceConfig(service_name, MCP_SSE, url, True)
-                else:
-                    logger.warning(f"Skipping discovered service with invalid URL: {service_name} -> {url}")
-
-            def _is_valid_mcp_url(self, url: str) -> bool:
-                parsed = urlparse(url)
-                return parsed.scheme in ("http", "https") and bool(parsed.netloc)
-
-            def _build_discovered_url(self, host: str, port: int, path: str) -> str:
-                safe_host = host
-                if ":" in host and not host.startswith("["):
-                    safe_host = f"[{host}]"
-                normalized_path = path if path.startswith("/") else f"/{path}"
-                return f"http://{safe_host}:{port}{normalized_path}"
-
-        zc: Optional[Zeroconf] = None
-        try:
-            zc = Zeroconf()
-            browser = ServiceBrowser(zc, service_type, MCPListener(self))
-            sleep(timeout_seconds)
-            browser.cancel()
-            logger.debug(f"mDNS scan finished. Found {len(discovered)} services.")
-            return discovered
-
-        except Exception as e:
-            logger.error(f"mDNS scan failed completely: {e}", exc_info=True)
-            return {}
-        finally:
-            if zc is not None:
-                zc.close()

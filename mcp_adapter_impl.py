@@ -4,12 +4,13 @@ import threading
 from contextlib import AsyncExitStack
 from threading import Thread
 from time import sleep
-from typing import Dict, Optional, Callable, Any
+from typing import Dict, Optional, Callable, Any, Set
 from fastmcp import Client
 
 from api.mcp_adapter import MCPAdapter
 from adapter_impl import Registry
-from services import MCP_SSE, ServiceRegistry
+from mdns import MDNSScanner
+from services import ServiceRegistry, Scanner, ServiceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +233,7 @@ class McpRegistry(Registry):
 
         # 1. Add new services
         for name, conf in current_services.items():
-            if conf.type == MCP_SSE and name not in self._mcp:
+            if conf.type == 'MCP' and name not in self._mcp:
                 try:
                     self._mcp[name] = SyncMCPClient(conf.url)
                     logger.debug(f"{'Auto-scanned' if conf.auto_scanned else 'Manually configured'} MCP server '{name}' added")
@@ -246,3 +247,9 @@ class McpRegistry(Registry):
                 client.close() # Kills the background thread gracefully
                 logger.debug(f"MCP server '{name}' removed and thread stopped.")
 
+
+
+class McpServiceScanner(Scanner):
+
+    def scan(self) -> Set[ServiceConfig]:
+        return {ServiceConfig(discovered.name, 'MCP', discovered.url, True) for discovered in MDNSScanner().scan("_mcp._tcp.local.") if discovered.name.upper() != 'OPENACTION'}

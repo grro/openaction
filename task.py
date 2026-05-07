@@ -112,10 +112,33 @@ class Task:
         self.last_executions: List[TaskResult] = list()
         self.default_timeout_sec = 30
         self.state = self.IDLING
+
         try:
             self._compiled_code = compile(self.code, f"<task:{self.name}>", 'exec')
+        except SyntaxError as e:
+            # 1. Format the code with line numbers and point to the error line
+            lines = self.code.splitlines()
+            numbered_code = []
+
+            for i, line in enumerate(lines):
+                line_num = i + 1
+                # Add a visual pointer (>>) to the exact line that failed
+                marker = ">> " if line_num == e.lineno else "   "
+                numbered_code.append(f"{marker}{line_num:03d} | {line}")
+
+            formatted_code = "\n".join(numbered_code)
+
+            # 2. Log a highly structured and readable error block
+            logger.error(
+                f"Syntax error compiling task '{self.name}' at line {e.lineno}: {e.msg}\n"
+                f"--- Source Code ---\n"
+                f"{formatted_code}\n"
+                f"-------------------"
+            )
+            raise
         except Exception as e:
-            logger.error(f"Syntax error in task '{self.name}': {e}")
+            # Catch-all for any other unforeseen compilation errors (e.g., MemoryError, TypeError)
+            logger.error(f"Unexpected error compiling task '{self.name}': {e}", exc_info=True)
             raise
 
     def _add_task_result(self, task_result: TaskResult):

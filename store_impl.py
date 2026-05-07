@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from random import randint
 from typing import Any
-from appdirs import site_data_dir
+from platformdirs import site_data_dir
 
 from api.store import Store
 

@@ -2,7 +2,6 @@ import os
 import asyncio
 import logging
 import importlib.metadata
-import socket
 from pathlib import Path
 from time import sleep
 from concurrent.futures import ThreadPoolExecutor
@@ -11,12 +10,12 @@ from datetime import datetime, timedelta
 
 import sys
 from fastmcp import FastMCP
-from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
+from mdns import MDNS
 from adapter_impl import AdapterManager
 from cron import CronService
 from http_adapter_impl import HttpRegistry
-from mcp_adapter_impl import McpRegistry
+from mcp_adapter_impl import McpRegistry, McpServiceScanner
 from services import ServiceRegistry, ServiceConfig, Configs
 from store_impl import SimpleStore
 from subscription import SubscriptionService
@@ -29,49 +28,6 @@ logger = logging.getLogger(__name__)
 
 
 
-class MDNS:
-    def __init__(self):
-        self.registered: Dict[str, ServiceInfo] = dict()
-        self.zc = Zeroconf(ip_version=IPVersion.V4Only)
-        self.service_type = "_mcp._tcp.local."
-        self.hostname = socket.gethostname()
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            self.local_ip = s.getsockname()[0]
-        finally:
-            s.close()
-
-    def register_mdns(self, name: str, port: int):
-        try:
-            service_name = f"{name}.{self.service_type}"
-            service_info = ServiceInfo(
-                type_=self.service_type,
-                name=service_name,
-                addresses=[socket.inet_aton(self.local_ip)],
-                port=port,
-                properties={
-                    "version": "1.0",
-                    "path": "/sse",
-                    "server_type": "fastmcp"
-                },
-                server=f"{self.hostname}.local.",
-            )
-
-            logging.info(f"mDNS: Registering {service_name} at {self.local_ip}:{port}")
-            self.zc.register_service(service_info)
-            self.registered[name] = service_info
-        except Exception as e:
-            logging.error(f"mDNS Registration failed: {e}")
-
-    def unregister_mdns(self, name: str):
-        service_info = self.registered.get(name)
-        if service_info is not None:
-            logging.info("mDNS: Unregistering service...")
-            self.zc.unregister_service(service_info)
-            self.zc.close()
-
-
 
 class OpenActionServer:
 
@@ -80,7 +36,10 @@ class OpenActionServer:
         self.host = host
         self.port = port
         self.store = SimpleStore(name="state", directory=dir)
-        self.service_registry = ServiceRegistry(configs, autoscan)
+        if autoscan:
+            self.service_registry = ServiceRegistry(configs, {McpServiceScanner()})
+        else:
+            self.service_registry = ServiceRegistry(configs, list())
         self.mcp_registry = McpRegistry(self.service_registry)
         self.adapter_manager = AdapterManager({HttpRegistry.NAME: HttpRegistry(), McpRegistry.NAME: self.mcp_registry})
         self.subscription_service = SubscriptionService(self.adapter_manager)
@@ -145,7 +104,7 @@ class OpenActionServer:
 
                 return "\n".join(report)
 
-        
+
             except Exception as e:
                 logger.error(f"Failed to list modules: {e}", exc_info=True)
                 return f"Error: Could not retrieve the environment details: {type(e).__name__} - {str(e)}"
@@ -617,3 +576,9 @@ if __name__ == '__main__':
     autoscan = sys.argv[4].upper() == 'ON'
 
     run_server(port, work_dir, config, autoscan)
+
+
+
+
+
+# test with npx @modelcontextprotocol/inspector node build\index.js

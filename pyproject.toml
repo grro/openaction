@@ -19,9 +19,9 @@ classifiers = [
 ]
 dependencies = [
     "requests>=2.31.0",
-    "appdirs>=1.4.4",
     "fastmcp==3.2.4",
-    "zeroconf>=0.148.0"
+    "zeroconf>=0.148.0",
+    "platformdirs>=4.9.6",
 ]
 
 [tool.setuptools]
