@@ -14,8 +14,8 @@ from fastmcp import FastMCP
 from mdns import MDNS
 from adapter_impl import AdapterManager
 from cron import CronService
-from http_adapter_impl import HttpRegistry
-from mcp_adapter_impl import McpRegistry, McpServiceScanner
+from http_support import HttpRegistry
+from mcp_support import McpRegistry, McpServiceScanner
 from services import ServiceRegistry, ServiceConfig, Configs
 from store_impl import SimpleStore
 from subscription import SubscriptionService
