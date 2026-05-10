@@ -4,8 +4,8 @@ from threading import Thread
 from time import sleep
 from typing import Dict, Optional
 
-from task import Task
-from task_repository import TaskRepository
+from task_adapter import TaskAdapter
+from task_repository import TaskAdapterRepository
 
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class CronService:
 
-    def __init__(self, task_repository : TaskRepository):
+    def __init__(self, task_repository : TaskAdapterRepository):
         self._is_running = False
         self._task_repository = task_repository
         self._cron_cache: Dict[str, set[int]] = {}
@@ -46,7 +46,7 @@ class CronService:
             sleep(sleep_time)
 
 
-    def _should_run(self, task: Task, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
+    def _should_run(self, task: TaskAdapter, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
         if task.cron_expression is None:
             return False
         # If task failed recently, wait 1 minute before retrying
@@ -62,7 +62,8 @@ class CronService:
                 return False
         return self._matches(task.cron_expression, now)
 
-    def _validate_cron_expression(self, expression: str) -> None:
+    @staticmethod
+    def validate_cron_expression(expression: str) -> None:
         fields = expression.split()
         if len(fields) != 5:
             raise ValueError(f"Invalid cron expression '{expression}'. Expected 5 fields.")
@@ -75,7 +76,7 @@ class CronService:
             (0, 7),
         ]
         for field, (minimum, maximum) in zip(fields, ranges, strict=True):
-            self._parse_field(field, minimum, maximum)
+            CronService._parse_field(field, minimum, maximum)
 
     def _matches(self, expression: Optional[str], now: datetime) -> bool:
         """Splits the cron expression and evaluates each field."""
@@ -113,7 +114,8 @@ class CronService:
             return True
         return value in allowed_values
 
-    def _parse_field(self, field: str, minimum: int, maximum: int) -> set[int]:
+    @staticmethod
+    def _parse_field(field: str, minimum: int, maximum: int) -> set[int]:
         values: set[int] = set()
 
         for part in field.split(","):

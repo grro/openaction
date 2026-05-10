@@ -4,55 +4,69 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from time import sleep
 from typing import List, Optional
 
-from adapter_impl import AdapterManager
 from code_repository import CodeRepository
 from store_impl import SimpleStore
-from subscription import SubscriptionService
-from task import Task, TaskFactory
+from task_adapter import TaskAdapter, TaskAdapterFactory
 
 logger = logging.getLogger(__name__)
 
 
 
 
-class TaskRepository:
+class TaskAdapterRepository:
     """Repository that periodically scaerver disconnected. For troubleshooting guidance,ns and loads tasks from a CodeRepository."""
 
-    def __init__(self, code_dir: str, task_factory: TaskFactory, store: SimpleStore, adapter_manager: AdapterManager, subscription_service: SubscriptionService):
+    def __init__(self, code_dir: str, task_factory: TaskAdapterFactory, store: SimpleStore):
         self.__is_running = False
         self._code_registry = CodeRepository(codedir=code_dir)
         self._task_factory = task_factory
         self._store = store
-        self._adapter_manager = adapter_manager
-        self._subscription_service = subscription_service
-        self.tasks: dict[str, Task] = {}
+        self.tasks: dict[str, TaskAdapter] = {}
         self._executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
         logger.info("TaskRepository initialized (Taskexecutor started)")
 
-    def register(self, name: str, code: str, description: str, cron: Optional[str], subscriptions: List[str], run_on_start: bool, ttl: Optional[int], is_test: bool) -> None:
-        task = self._task_factory.create(name, code, description, cron, subscriptions, run_on_start, ttl, is_test)
+    def register(self, name: str, code: str, description: str, ttl: Optional[int], is_test: bool) -> None:
+
+        if name.startswith("test_"):
+            raise ValueError("Task name cannot contain dots ('.')")
+
+        for char in [',', '.', ' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|']:
+            if char in name:
+                raise ValueError("Task name cannot contain '" + char + "'")
+
+        task = self._task_factory.create(name, code, description, ttl, is_test)
 
         image = self._code_registry.create_image(name)
         image.write_data(task.code, task.props)
 
-        self._add_task(name, task)
+        self._add_task(name, task, reason="newly registered")
 
-    def _add_task(self, name: str, task: Task):
+    def _add_task(self, name: str, task: TaskAdapter, reason: str):
         if task is None:
             logger.warning(f"Failed to add task '{name}'. Ni after registration.")
         else:
-            if name not in self.tasks.keys():
+            is_new = name not in self.tasks.keys()
+            is_updated = not is_new and self.tasks[name].created_at != task.created_at
+
+            if is_new or is_updated:
                 self.tasks[name] = task
 
+                task.activate()
                 if task.run_on_start:
-                    logger.info(f"Task '{name}' added to registry with load on start")
+                    if is_new:
+                        logger.info(f"Task '{name}' added to registry with load on start (Reason: {reason})")
+                    else:
+                        logger.info(f"Task '{name}' re-added to registry with load on start (Reason: {reason})")
                     task.safe_run("run_on_start")
                 else:
-                    logger.info(f"Task '{name}' added to registry")
+                    if is_new:
+                        logger.info(f"Task '{name}' added to registry (Reason: {reason})")
+                    else:
+                        logger.info(f"Task '{name}' re-added to registry (Reason: {reason})")
 
-                if len(task.props_observed) > 0:
-                    for prop_observed in task.props_observed:
-                        self._subscription_service.subscribe(prop_observed.service, prop_observed.prop, prop_observed.min_interval_sec, task)
+                #if len(task.props_observed) > 0:
+                 #   for prop_observed in task.props_observed:
+                  #      self._subscription_service.subscribe(prop_observed.service, prop_observed.prop, prop_observed.min_interval_sec, task)
 
     def deregister(self, name: str, reason: str) -> None:
         task = self.tasks.pop(name, None)
@@ -89,6 +103,7 @@ class TaskRepository:
                 logger.exception(f"Unexpected error in periodic clean up: {e}")
             sleep(60)
 
+
         self._executor.shutdown()
         logger.info("TaskRepository stopped and Taskexecutor shut down.")
 
@@ -99,13 +114,12 @@ class TaskRepository:
             code, props = image.read()
             task = self._task_factory.restore(image.unit_name, code, props)
             load_task_names.add(task.name)
-            load_task_names.add(task.name)
 
             if task.name in self.tasks.keys():
                 if task.created_at > self.tasks.get(task.name).created_at:
-                    self._add_task(task.name, task)
+                    self._add_task(task.name, task, reason="loaded from code repo")
             else:
-                self._add_task(task.name, task)
+                self._add_task(task.name, task, reason="loaded from code repo")
 
         for name in list(self.tasks.keys()):
             if name not in load_task_names:
@@ -116,5 +130,5 @@ class TaskRepository:
         for image in self._code_registry.list_images():
             code, props = image.read()
             task = self._task_factory.restore(image.unit_name, code, props)
-            if not task.is_still_valid():
+            if task.is_expired():
                 self.deregister(task.name, reason="TTL expired")

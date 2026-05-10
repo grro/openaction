@@ -1,14 +1,17 @@
+import json
 import logging
 import socket
-from dataclasses import dataclass
-from typing import Dict, Optional, Set
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from threading import Thread
+from typing import Dict, Optional, List, Set, Any
 from time import sleep
-from urllib.parse import urlparse
+from zeroconf import IPVersion, ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener, ZeroconfServiceTypes
 
-from zeroconf import IPVersion, ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
+from api.store import Store
+from store_impl import ScopedStore, SimpleStore
 
 logger = logging.getLogger(__name__)
-
 
 
 
@@ -18,14 +21,19 @@ class MDNS:
         self.zc = Zeroconf(ip_version=IPVersion.V4Only)
         self.service_type = "_mcp._tcp.local."
         self.hostname = socket.gethostname()
+
+        # Determine local IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(("8.8.8.8", 80))
             self.local_ip = s.getsockname()[0]
+        except Exception:
+            self.local_ip = "127.0.0.1"
         finally:
             s.close()
 
     def register_mdns(self, name: str, port: int):
+        """Registers a service via mDNS."""
         try:
             service_name = f"{name}.{self.service_type}"
             service_info = ServiceInfo(
@@ -41,44 +49,95 @@ class MDNS:
                 server=f"{self.hostname}.local.",
             )
 
-            logging.info(f"mDNS: Registering {service_name} at {self.local_ip}:{port}")
+            logger.info(f"mDNS: Registering {service_name} at {self.local_ip}:{port}")
             self.zc.register_service(service_info)
             self.registered[name] = service_info
         except Exception as e:
-            logging.error(f"mDNS Registration failed: {e}")
+            logger.error(f"mDNS Registration failed: {e}")
 
     def unregister_mdns(self, name: str):
-        service_info = self.registered.get(name)
-        if service_info is not None:
-            logging.info("mDNS: Unregistering service...")
+        """Unregisters a specific service without closing the Zeroconf instance."""
+        service_info = self.registered.pop(name, None)
+        if service_info:
+            logger.info(f"mDNS: Unregistering service {name}...")
             self.zc.unregister_service(service_info)
-            self.zc.close()
 
+    def shutdown(self):
+        """Completely shut down mDNS and close the socket."""
+        self.zc.unregister_all_services()
+        self.zc.close()
 
 
 
 @dataclass(frozen=True)
-class DiscoveredService:
+class MDNSService:
     name: str
-    url: str
+    discovered_at: str
+    host: str
+    path: str
+    port: int
+
+    @property
+    def last_seen(self) -> datetime:
+        return datetime.fromisoformat(self.discovered_at)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MDNSService":
+        return cls(**data)
 
 
-class MDNSScanner:
-    """
-    A utility class for discovering Model Context Protocol (MCP) servers
-    on the local network using mDNS (Zeroconf).
-    """
+class MDNSRegistry:
+    def __init__(self, store: SimpleStore):
+        self.is_running = False
+        self._store = ScopedStore(store, "__mdns_registry__")
+        self._services = dict()
+        try:
+            for name, service in json.loads(self._store.get("services", dict())).items():
+                self._services[name] = MDNSService.from_dict(service)
+                logger.info(f"mDNS: Restoring previously discovered service '{service}'")
+        except Exception as e:
+            logger.warning(f"Failed to restore mDNS services from store: {e}")
 
-    def scan(self, service_type: str, timeout_seconds: float = 1.5) -> Set[DiscoveredService]:
-        """
-        Performs a brief, synchronous scan for mDNS services matching the MCP type.
-        """
-        logger.debug(f"Starting mDNS scan for {timeout_seconds} seconds...")
-        discovered: Set[DiscoveredService] = set()
 
-        class MCPListener(ServiceListener):
-            def __init__(self, parent_scanner):
-                self.scanner = parent_scanner
+    @property
+    def services(self) -> List[MDNSService]:
+        return list(self._services.values())
+
+    @property
+    def names(self) -> Set[str]:
+        return set(self._services.keys())
+
+    def start(self):
+        if not self.is_running:
+            self.is_running = True
+            Thread(target=self._loop, daemon=True).start()
+
+    def stop(self):
+        self.is_running = False
+
+    def _loop(self):
+        while self.is_running:
+            try:
+                discovered = self._scan(timeout_seconds=2.0)
+                for service in discovered.values():
+                    self._services[service.name] = service
+
+                srvs = {service.name: service.to_dict() for service in self._services.values()}
+                self._store.put("services", json.dumps(srvs))
+            except Exception as e:
+                logger.warning(f"Error in MDNSServiceRegistry loop: {e}")
+            sleep(60)
+
+    def _scan(self, timeout_seconds: float) -> Dict[str, MDNSService]:
+        discovered: Dict[str, MDNSService] = dict()
+
+        class AnyListener(ServiceListener):
+
+            def __init__(self, registry: MDNSRegistry):
+                self.registry = registry
 
             def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
                 self._process(zc, type_, name)
@@ -95,40 +154,32 @@ class MDNSScanner:
                     return
 
                 host = info.parsed_addresses()[0]
-                path_raw = info.properties.get(b"path", b"").decode("utf-8", errors="ignore")
+                path_raw = info.properties.get(b"path", b"/").decode("utf-8", errors="ignore")
                 path = path_raw if path_raw.startswith("/") else f"/{path_raw}"
 
-                service_name = name.replace(f".{type_}", "").strip()
-                url = self._build_discovered_url(host, info.port, path)
+                if name != "OpenAction._mcp._tcp.local.":
+                    discovered[name] = MDNSService(name=name, discovered_at=datetime.now().isoformat(), host=host, path=path, port=info.port)
+                    if name not in self.registry.names:
+                        logger.info(f"mDNS: Discovered '{name}' at {host}:{info.port}{path}")
 
-                if self._is_valid_url(url):
-                    discovered.add(DiscoveredService(service_name, url))
-                else:
-                    logger.warning(f"Skipping discovered service with invalid URL: {service_name} -> {url}")
 
-            def _is_valid_url(self, url: str) -> bool:
-                parsed = urlparse(url)
-                return parsed.scheme in ("http", "https") and bool(parsed.netloc)
-
-            def _build_discovered_url(self, host: str, port: int, path: str) -> str:
-                safe_host = host
-                if ":" in host and not host.startswith("["):
-                    safe_host = f"[{host}]"
-                normalized_path = path if path.startswith("/") else f"/{path}"
-                return f"http://{safe_host}:{port}{normalized_path}"
-
-        zc: Optional[Zeroconf] = None
+        zc = Zeroconf()
         try:
-            zc = Zeroconf()
-            browser = ServiceBrowser(zc, service_type, MCPListener(self))
-            sleep(timeout_seconds)
-            browser.cancel()
-            logger.debug(f"mDNS scan finished. Found {len(discovered)} services.")
+            all_types = ZeroconfServiceTypes.find(zc=zc)
+            if len(all_types) > 0:
+                browsers = []
+                for service_type in all_types:
+                    browsers.append(ServiceBrowser(zc, service_type, AnyListener(self)))
+
+                sleep(timeout_seconds)
+
+                for browser in browsers:
+                    browser.cancel()
+
             return discovered
 
         except Exception as e:
-            logger.error(f"mDNS scan failed completely: {e}", exc_info=True)
-            return {}
+            logger.error(f"mDNS scan failed: {e}", exc_info=True)
+            return []
         finally:
-            if zc is not None:
-                zc.close()
+            zc.close()

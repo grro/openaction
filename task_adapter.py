@@ -1,14 +1,15 @@
 import concurrent
 import logging
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
-from adapter_impl import AdapterManager
-from store_impl import Store, SimpleStore, ScopedStore
+from api.store import Store
+from api.task import Task
+from store_impl import SimpleStore, ScopedStore
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ class PropertiesObserved:
         return f"PropertiesObserved({self.identity}, {self.min_interval_sec}s)"
 
 
+
+
 class TaskResult:
 
     def __init__(self, trigger: str, elapsed: timedelta, output: str = None, error: str = None):
@@ -91,54 +94,159 @@ class TaskResult:
         return self.__str__()
 
 
-class Task:
+
+
+
+def when(target: str):
+    """
+    Decorator to attach trigger conditions to a task's execute method.
+    Examples:
+        @when("Time cron 55 55 5 * * ?")
+        @when("Item gMotion_Sensors changed")
+        @when("Rule loaded")
+    """
+    def decorated_method(function):
+        # Initialize the list if it doesn't exist yet
+        if not hasattr(function, '__triggers__'):
+            function.__triggers__ = []
+        function.__triggers__.append(target)
+        return function
+    return decorated_method
+
+
+
+class TaskAdapter:
 
     RUNNING = "running"
     IDLING = "idling"
 
+
     def __init__(self,
                  executor: ThreadPoolExecutor,
                  store: Store,
-                 adapter_manager: AdapterManager,
                  name: str,
                  code: str,
                  props: Dict[str, Any]):
         self._scoped_store = store
-        self._adapter_manager = adapter_manager
         self._executor = executor
         self.name = name
         self.props = props
         self.code = code
         self.last_executions: List[TaskResult] = list()
         self.default_timeout_sec = 30
+        self.is_activated = False
         self.state = self.IDLING
+        self._task_instance = self.instantiate()
+        self.run_on_start = False
+        self.cron_expression = None
+        self.subscriptions = set()
+        self._parse_triggers()
 
+
+    def __del__(self):
         try:
-            self._compiled_code = compile(self.code, f"<task:{self.name}>", 'exec')
+            if self.is_activated:
+                self.deactivate()
+        except Exception:
+            pass
+
+    def _parse_triggers(self):
+        """Extracts and parses the @when decorators from the instantiated task."""
+
+        if not hasattr(self._task_instance, "on_execute"):
+            return
+
+        # Retrieve the metadata attached by the @when decorator
+        method = self._task_instance.on_execute
+        triggers = getattr(method, '__triggers__', [])
+
+        # Enforce the mandatory trigger rule
+        if not triggers:
+            raise ValueError(
+                f"Validation Error in task '{self.name}': The 'on_execute' method "
+                f"must be decorated with at least one '@when' trigger."
+            )
+
+        for trigger in triggers:
+            trigger = trigger.strip()
+
+            if trigger.lower() == "rule loaded":
+                self.run_on_start = True
+
+            elif trigger.lower().startswith("time cron "):
+                cron_expression = trigger[10:].strip()
+                fields = cron_expression.split()
+                if len(fields) != 5:
+                    raise ValueError(f"Invalid cron expression '{cron_expression}'. Expected 5 fields.")
+                self.cron_expression = cron_expression
+
+            elif trigger.lower().startswith("item "):
+                # Extract the item name. e.g., "Item gMotion_Sensors changed" -> "gMotion_Sensors"
+                parts = trigger.split(" ")
+                if len(parts) >= 2:
+                    self.subscriptions.add(parts[1])
+
+
+    def instantiate(self) -> Task:
+        try:
+            # Inject required dependencies directly into the script's namespace
+            self._namespace = {
+                "__name__": f"task_{self.name}",
+                "Store": Store,
+                "Task": Task,
+                "when": when
+            }
+
+            # Compile and execute the user's script
+            compiled_code = compile(self.code, f"task_{self.name}.py", 'exec')
+            exec(compiled_code, self._namespace)
+
+            user_class = None
+            for obj in self._namespace.values():
+                # Check if it's a class, a subclass of Task, and NOT the base Task class itself
+                if isinstance(obj, type) and issubclass(obj, Task) and obj is not Task:
+                    if user_class is None:
+                        user_class = obj
+                    else:
+                        raise ValueError(
+                            f"Multiple classes implementing the 'Task' interface found in "
+                            f"the script for '{self.name}'. Please ensure only one class inherits from 'Task'."
+                        )
+
+            if not user_class:
+                raise ValueError(f"No class implementing the 'Task' interface found in the script for '{self.name}'.")
+
+            # Instantiate and return the matched class
+            return user_class(self._scoped_store)
+
         except SyntaxError as e:
             # 1. Format the code with line numbers and point to the error line
             lines = self.code.splitlines()
             numbered_code = []
 
+            # Fallback to line 0 if lineno is None (e.g., unexpected EOF)
+            error_line = e.lineno if e.lineno is not None else 0
+
             for i, line in enumerate(lines):
                 line_num = i + 1
                 # Add a visual pointer (>>) to the exact line that failed
-                marker = ">> " if line_num == e.lineno else "   "
+                marker = ">> " if line_num == error_line else "   "
                 numbered_code.append(f"{marker}{line_num:03d} | {line}")
 
             formatted_code = "\n".join(numbered_code)
 
             # 2. Log a highly structured and readable error block
             logger.error(
-                f"Syntax error compiling task '{self.name}' at line {e.lineno}: {e.msg}\n"
+                f"Syntax error compiling task '{self.name}' at line {error_line}: {e.msg}\n"
                 f"--- Source Code ---\n"
                 f"{formatted_code}\n"
                 f"-------------------"
             )
             raise
+
         except Exception as e:
-            # Catch-all for any other unforeseen compilation errors (e.g., MemoryError, TypeError)
-            logger.error(f"Unexpected error compiling task '{self.name}': {e}", exc_info=True)
+            # Catch-all for any other unforeseen compilation, instantiation, or setup errors
+            logger.error(f"Unexpected error instantiating task '{self.name}': {e}", exc_info=True)
             raise
 
     def _add_task_result(self, task_result: TaskResult):
@@ -162,21 +270,12 @@ class Task:
         return {PropertiesObserved.from_string(p) for p in raw_props}
 
     @property
-    def cron_expression(self) -> Optional[str]:
-        """Returns the cron expression if this task is a CronTask, otherwise None."""
-        return self.props.get("cron_expression", None)
-
-    @property
     def created_at(self) -> datetime:
         return datetime.fromisoformat(self.props.get("created_at", datetime.now().isoformat()))
 
     @property
     def description(self) -> str:
         return self.props.get("description", "False")
-
-    @property
-    def run_on_start(self) -> bool:
-        return self.props.get("run_on_start", False)
 
     @property
     def is_test_task(self) -> bool:
@@ -187,14 +286,11 @@ class Task:
         """Returns the expiration timestamp of the task's TTL, if set."""
         if "valid_to" in self.props:
             return datetime.fromisoformat(self.props["valid_to"])
-        return None
+        return datetime(2999, 1, 1)
 
-    def is_still_valid(self) -> bool:
+    def is_expired(self) -> bool:
         """Checks if the task's TTL has expired based on the 'valid_to' property."""
-        if self.valid_to is None:
-            return True
-        else:
-            return datetime.now() < self.valid_to
+        return datetime.now() > self.valid_to
 
     def last_attempt_at(self) -> Optional[datetime]:
         """Returns the timestamp of the most recent execution attempt."""
@@ -240,12 +336,13 @@ class Task:
         timeout_sec = self.props.get("timeout", self.default_timeout_sec)
         try:
             self.state = self.RUNNING
-            logger.info("Executing task '%s'", self.name)
+            logger.info("Executing task '%s' (trigger '%s')", self.name, trigger)
 
-            future = self._executor.submit(self._execute_script)
+            future = self._executor.submit(self._execute_task)
             printed_output = future.result(timeout=timeout_sec)
             elapsed = datetime.now() - start
             task_result = TaskResult(trigger, elapsed, output=printed_output)
+            logger.info(task_result)
         except concurrent.futures.TimeoutError as te:
             error_msg = f"Execution failed (TimeoutError; timeout {timeout_sec} seconds) for task '{self.name}': {str(te)}"
             logger.warning(error_msg)
@@ -268,31 +365,46 @@ class Task:
 
         return task_result
 
-    def _execute_script(self):
+    def _execute_task(self) -> str:
         """
-        The wrapper that actually runs the compiled code.
-        This is what gets sent to the ThreadPoolExecutor.
+        Executes the task instance's logic while capturing all console output.
+        Returns a combined string of the logical return value and captured logs.
         """
-        # Define the environment available to the script
-        global_env = {
-            "registry": self._adapter_manager,
-            "store": self._scoped_store,
-            "props": self.props,
-            "__builtins__": __builtins__
-        }
-
         output_buffer = io.StringIO()
         try:
-            with redirect_stdout(output_buffer):
-                # Execute the procedural script
-                # Any variables defined in the script stay in global_env
-                exec(self._compiled_code, global_env)
+            # Capture both standard output (print) and standard error (warnings/logs)
+            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                # Execute the user-defined logic
+                result = self._task_instance.on_execute()
+
         except Exception as e:
-            # Attach the output generated so far to the exception
+            # Attach any captured output to the exception for debugging
             e.output = output_buffer.getvalue()
             raise e
 
-        return output_buffer.getvalue()
+        # Retrieve captured console logs
+        captured_logs = output_buffer.getvalue()
+
+        # Format the result:
+        # If the user returned a value, convert it to string and append logs.
+        # If the user returned None, just return the logs.
+        if result is not None:
+            return f"{result}\n--- Console Output ---\n{captured_logs}"
+
+        return captured_logs
+
+    def activate(self):
+        self.is_activated = True
+
+    def deactivate(self):
+        self.is_activated = False
+        # Safety check: Only call if the task instance exists and implements the method
+        if hasattr(self, '_task_instance') and hasattr(self._task_instance, "on_deactivate"):
+            try:
+                self._task_instance.on_destroy()
+            except Exception as e:
+                logger.error(f"Error deactivating task '{self.name}': {e}", exc_info=True)
+
 
     def __str__(self) -> str:
         type_flag = "🧪 TEST" if getattr(self, 'is_test_task', False) else "🛡️ PROD"
@@ -302,13 +414,6 @@ class Task:
 
         # 2. Configuration Section
         triggers = []
-        if getattr(self, 'cron_expression', None):
-            triggers.append(f"cron({self.cron_expression})")
-        if getattr(self, 'props_observed', None):
-            triggers.append(f"subs({len(self.props_observed)})")
-        if getattr(self, 'run_on_start', False):
-            triggers.append("on_start")
-
         trigger_str = " + ".join(triggers) if triggers else "manual_only"
 
         lines.append("--- Configuration ---")
@@ -351,39 +456,29 @@ class Task:
         return "\n".join(lines)
 
 
-class TaskFactory:
+class TaskAdapterFactory:
 
-    def __init__(self, store: SimpleStore, adapter_manager: AdapterManager, executor: ThreadPoolExecutor):
+    def __init__(self, store: SimpleStore, executor: ThreadPoolExecutor):
         self._store = store
-        self._adapter_manager = adapter_manager
         self._executor = executor
 
     def create(self,
                name: str,
                code: str,
                description: str,
-               cron_expression: Optional[str],
-               subscriptions: List[str],
-               run_on_start: bool  = False,
                ttl: Optional[int] = None,
                is_test: bool = False):
 
         props: Dict [str, Any] = {  'created_at': datetime.now().isoformat(),
                                     'description': description,
-                                    'run_on_start': run_on_start,
                                     'is_test': is_test,
                                     'ttl': -1 if ttl is None else ttl}
-        if cron_expression is not None:
-            props['cron_expression'] = cron_expression
-        if subscriptions is not None:
-            props['props_observed'] = subscriptions
 
-        return Task(self._executor,
-                    ScopedStore(self._store, name),
-                    self._adapter_manager,
-                    name,
-                    code,
-                    props)
+        return TaskAdapter(self._executor,
+                           ScopedStore(self._store, name),
+                           name,
+                           code,
+                           props)
 
 
     def restore(self,
@@ -391,10 +486,9 @@ class TaskFactory:
                 code: str,
                 props: Dict[str, Any]):
 
-        return Task(self._executor,
-                    ScopedStore(self._store, name),
-                    self._adapter_manager,
-                    name,
-                    code,
-                    props)
+        return TaskAdapter(self._executor,
+                           ScopedStore(self._store, name),
+                           name,
+                           code,
+                           props)
 

@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import logging
 import importlib.metadata
@@ -7,20 +8,15 @@ from time import sleep
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-
-import sys
 from fastmcp import FastMCP
 
-from mdns import MDNS
-from adapter_impl import AdapterManager
+from mdns import MDNS, MDNSRegistry
 from cron import CronService
-from http_support import HttpRegistry
-from mcp_support import McpRegistry, McpServiceScanner
-from services import ServiceRegistry, ServiceConfig, Configs
+from config import ServiceRegistry, Service, Configs
 from store_impl import SimpleStore
-from subscription import SubscriptionService
-from task import TaskFactory
-from task_repository import TaskRepository
+from task_adapter import TaskAdapterFactory
+from task_repository import TaskAdapterRepository
+
 
 
 logger = logging.getLogger(__name__)
@@ -31,26 +27,21 @@ logger = logging.getLogger(__name__)
 
 class OpenActionServer:
 
-    def __init__(self, port: int, dir: str, configs: Dict[str, ServiceConfig], autoscan: bool, host: str = "0.0.0.0"):
+    def __init__(self, port: int, dir: str, configs: Dict[str, Service], autoscan: bool, host: str = "0.0.0.0"):
         self.name = 'OpenAction'
         self.host = host
         self.port = port
         self.store = SimpleStore(name="state", directory=dir)
-        if autoscan:
-            self.service_registry = ServiceRegistry(configs, {McpServiceScanner()})
-        else:
-            self.service_registry = ServiceRegistry(configs, list())
-        self.mcp_registry = McpRegistry(self.service_registry)
-        self.adapter_manager = AdapterManager({HttpRegistry.NAME: HttpRegistry(), McpRegistry.NAME: self.mcp_registry})
-        self.subscription_service = SubscriptionService(self.adapter_manager)
+        self.mdns_registry = MDNSRegistry(self.store)
+        self.manual_registry = ServiceRegistry(configs)
         self.executors = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
-        self.task_factory = TaskFactory(self.store, self.adapter_manager, self.executors)
-        self.task_repository = TaskRepository(os.path.join(dir, "tasks"), self.task_factory, self.store, self.adapter_manager, self.subscription_service)
+        self.task_factory = TaskAdapterFactory(self.store, self.executors)
+        self.task_repository = TaskAdapterRepository(os.path.join(dir, "tasks"), self.task_factory, self.store)
         self.cron = CronService(self.task_repository)
 
-        self.mcp_registry.start()
+        self.manual_registry.start()
+        self.mdns_registry.start()
         self.task_repository.start()
-        self.subscription_service.start()
         self.cron.start()
 
         self.mdns = MDNS()
@@ -111,30 +102,7 @@ class OpenActionServer:
 
         @self.mcp.tool()
         def list_api() -> str:
-            """
-            Provides the source code definitions for all available adapter types (connectors) and the local Store.
 
-            This tool serves as the 'Source of Truth' for developers writing task logic. It reveals
-            the actual class definitions, method signatures, and docstrings for the components
-            available in the execution environment.
-
-            Runtime Behavior:
-            - Both a 'Store' instance and an 'AdapterRegistry' are automatically injected into
-              the task's execution context.
-            - The 'Store' instance is used to maintain task state across different executions.
-              It provides simple get/set methods and is backed by local file-based storage.
-            - The 'AdapterRegistry' is used to retrieve concrete adapter instances by specifying
-              the 'adapter_type' and an optional 'name'.
-            - Note: Certain adapter types do not require a name and will return a default
-              implementation if the name is omitted.
-            - No manual Python imports are required within your task scripts to use these components.
-            - Use the source code provided by this tool to understand the available methods
-              and expected data structures for both the Store and all connectors.
-
-            Returns:
-                str: A formatted string containing the Python source code of the Store interface
-                     as well as all available adapter classes.
-            """
             try:
                 # Resolve the absolute path to the 'api' directory relative to this file
                 api_dir = Path(__file__).parent / "api"
@@ -161,52 +129,95 @@ class OpenActionServer:
 
 
         @self.mcp.tool()
+        def list_available_services() -> str:
+            """
+            Lists all manually configured services and locally discovered mDNS services.
+            Use this to identify available hardware, endpoints, or network APIs.
+            """
+            try:
+                report = [
+                    "### 📡 Available Services",
+                    "=========================\n"
+                ]
+
+                # --- 1. Manually Configured Services ---
+                report.append("#### 🛠️ Manually Configured Services")
+                manual_services = getattr(self.manual_registry, 'services', [])
+
+                if not manual_services:
+                    report.append("*No manually configured services found.*\n")
+                else:
+                    for svc in manual_services:
+                        name = getattr(svc, 'name', 'Unknown')
+                        svc_type = getattr(svc, 'type', 'Unknown').upper()
+                        url = getattr(svc, 'url', 'Unknown URL')
+                        report.append(f"• **{name}** [{svc_type}]: `{url}`")
+                    report.append("\n") # Spacer
+
+                # --- 2. mDNS Discovered Services ---
+                report.append("#### 🔍 Discovered Local Services (mDNS)")
+                mdns_services = getattr(self.mdns_registry, 'services', {})
+
+                if not mdns_services:
+                    report.append("*No mDNS services currently discovered on the local network.*")
+                else:
+                    # Normalize iteration if it's a dictionary
+                    iterator = mdns_services.values() if isinstance(mdns_services, dict) else mdns_services
+
+                    for svc in iterator:
+                        name = svc.name
+                        port = svc.port
+                        server = svc.host
+
+                        # Extract and format the last_seen timestamp
+                        last_seen = svc.last_seen
+                        time_str = last_seen.strftime("%Y-%m-%d %H:%M:%S")
+
+                        # Extract and safely decode byte-encoded properties common in Zeroconf
+                        props = getattr(svc, 'properties', {})
+                        props_str = ""
+                        if props:
+                            safe_props = {}
+                            for k, v in props.items():
+                                safe_k = k.decode('utf-8') if isinstance(k, bytes) else str(k)
+                                safe_v = v.decode('utf-8') if isinstance(v, bytes) else str(v)
+                                safe_props[safe_k] = safe_v
+                            props_str = f"\n  - *Properties:* `{safe_props}`"
+
+                        # Append the formatted service entry
+                        report.append(f"• **{name}** (`{server}:{port}`) | *last seen: {time_str}*{props_str}")
+
+                return "\n".join(report)
+
+            except Exception as e:
+                logger.error(f"Failed to list available services: {e}", exc_info=True)
+                return f"Error: Could not retrieve services: {type(e).__name__} - {str(e)}"
+
+
+        @self.mcp.tool()
         def register_task(name: str,
                           script: str,
-                          description: str,
-                          subscriptions: Optional[List[str]] = None,
-                          cron: Optional[str] = None,
-                          run_on_start: bool = False) -> str:
+                          description: str) -> str:
             """
             Registers a new permanent Python-based task
 
             Args:
                 name (str): A unique, URI-safe identifier (alphanumeric, hyphens, underscores, or dots).
                     Note: Production tasks MUST NOT start with the 'test_' prefix.
-                script (str): The procedural Python source code to execute.
+                script (str): The Python source code extending the abstract `Task` class from the API.
+                    Refer to the `list_api` tool to view the required class interface.
+                    Note: Your script does not need to import the `Task` and `Store` definitions;
+                    they are automatically injected into the execution environment.
                     Constraint: Consolidate all logic for a specific device (e.g., a single heater
                     or roller shutter) into one script rather than creating multiple fragmented tasks.
                 description (str): A brief, clear explanation of the task's logic and purpose.
-
-                --- Trigger Configurations ---
-                subscriptions (list of str, optional): Notification-based trigger. A list of
-                    identifiers (e.g., MCP resource URIs). If provided, the task subscribes to
-                    these properties for real-time, event-driven execution.
-                cron (str, optional): Clock-based trigger. A standard cron expression defining
-                    a recurring execution schedule.
-                run_on_start (bool): Startup trigger. If True, the task executes immediately
-                    upon registration or system boot.
 
             Returns:
                 str: A confirmation message indicating the registration status.
 
             ==============================
-            SCRIPT EXECUTION ENVIRONMENT
-            ==============================
-
-            The script is executed as a procedural block. The following objects are
-            injected automatically into the global scope:
-
-                1. `store`: A persistence object for maintaining state across execution cycles.
-                   E.g. use this to cache values and minimize redundant external service calls.
-                2. `registry`: A centralized manager used to retrieve specific adapters
-                   (e.g., `registry.get_adapter("http_adapter")`).
-
-
-            ==============================
             MANDATORY PROTOCOLS
             ==============================
-
             Error Handling & Retries:
                 The script MUST evaluate all external service responses for error states.
                 If a failure occurs, an Exception MUST be raised. This ensures the system
@@ -217,26 +228,16 @@ class OpenActionServer:
                    If found, MERGE your logic into the existing script.
                 2. Test-First: You MUST use the `execute_task` tool to validate your script
                    logic and JSON parsing BEFORE calling `register_task`.
+                   *Discovery Context:* While writing the task, you should use the `list_available_services`
+                   and `list_available_modules` tools to map the available environment. This is
+                   critical to ensure your script runs correctly before permanent deployment.
             """
-
-            # Guard clause: Ensure the user isn't trying to deploy a test script permanently
-            if name.startswith("test_"):
-                return (
-                    "Error: Validation failed. Production tasks cannot start with 'test_'. "
-                    "If you are trying to test a script, use the `execute_task` tool instead."
-                )
-
-            # Normalize defaults to prevent NoneType errors downstream
-            subs = subscriptions if subscriptions is not None else []
 
             try:
                 self.task_repository.register(
                     name=name,
                     code=script,
                     description=description,
-                    cron=cron,
-                    subscriptions=subs,
-                    run_on_start=run_on_start,
                     ttl=None,
                     is_test=False
                 )
@@ -247,56 +248,6 @@ class OpenActionServer:
             except Exception as e:
                 logger.error(f"Failed to register task '{name}': {e}", exc_info=True)
                 return f"Error: An internal error occurred during registration: {type(e).__name__} - {str(e)}"
-
-
-        @self.mcp.tool()
-        def list_provided_services() -> str:
-            """
-            Lists all external hardware and software services currently available to OpenAction.
-
-            DISCOVERY FLOW:
-            1. Call this tool to identify WHAT is connected (e.g., 'hue_lights', 'office_shutter').
-            2. Call 'list_api' to determine HOW to interact with them via code.
-
-            Service Categorization & Access:
-            - MCP [SSE]: Native Model Context Protocol servers.
-              Access: Use `registry.get_adapter("mcp_adapter", "service_name")`.
-            - HTTP [REST]: Standard web services.
-              Access: Use `registry.get_adapter("mcp_adapter")`.
-            - SHELLY: Local IoT devices (switches, roller shutters, etc.).
-              Access: Use `registry.get_adapter("mcp_adapter")`
-              IMPORTANT: Specific API structures for Shelly are NOT provided by 'list_service_apis'.
-              You must implement the correct HTTP endpoints (e.g., Shelly Gen 1 '/relay/0'
-              or Gen 2 RPC calls) based on the device URL and standard Shelly documentation.
-
-            Returns:
-                str: A formatted list containing service names, protocols, endpoints, and reachability status.
-            """
-            try:
-                if not self.service_registry.registered_services:
-                    return "Environment Empty: No external services are currently configured."
-
-                output = [
-                    "Active Service Environment:",
-                    "===========================",
-                    "Status Legend: [✔] Reachable | [✘] Unreachable\n",
-                    "Use the names below as identifiers in your Python scripts:\n"
-                ]
-
-                # Iterate through registered services to build the discovery list
-                for name, conf in self.service_registry.registered_services.items():
-                    is_reachable = name in self.service_registry.reachable_services
-                    status_icon = "✔" if is_reachable else "✘"
-                    svc_type = str(conf.type).upper()
-
-                    output.append(f"• [{status_icon}] **{conf.name}** [{svc_type}]: `{conf.url}`")
-                    output.append("")  # Spacer for readability
-
-                return "\n".join(output)
-
-            except Exception as e:
-                logger.error(f"Discovery Error: {e}", exc_info=True)
-                return f"Error: Could not map the environment: {type(e).__name__} - {str(e)}"
 
 
         # Expose this function as a callable tool over the Model Context Protocol
@@ -391,6 +342,22 @@ class OpenActionServer:
                             lines.append(f"  - `Output:\n    {indented_out}`")
                     lines.append("")
 
+                # Persistent Store Data Section
+                lines.append("### 💾 Persistent Store Data")
+                try:
+                    store_data = task.data()
+                    if not store_data:
+                        lines.append("- *No persistent data stored.*")
+                    else:
+                        for key, value in sorted(store_data.items()):
+                            display_value = str(value)
+                            if len(display_value) > 200:
+                                display_value = display_value[:197] + "..."
+                            lines.append(f"- **`{key}`**: `{display_value}`")
+                except Exception as e:
+                    lines.append(f"- *Error retrieving store data: {type(e).__name__} - {e}*")
+                lines.append("")
+
                 lines.append("### 📝 Source Code")
                 lines.append(f"```python\n{task.code.strip()}\n```")
 
@@ -424,9 +391,6 @@ class OpenActionServer:
                     name=test_name,
                     code=code,
                     description=f"Manual execution trigger: {datetime.now().isoformat()}",
-                    cron_expression=None,
-                    subscriptions=[],
-                    run_on_start=False,
                     ttl=3600,
                     is_test=True
                 )
@@ -536,16 +500,17 @@ class OpenActionServer:
 
     def stop(self):
         self.cron.stop()
-        self.subscription_service.stop()
         self.task_repository.stop()
-        self.mcp_registry.stop()
+        self.mdns_registry.stop()
+        self.manual_registry.stop()
         self.mdns.unregister_mdns(self.name)
+        self.executors.shutdown(wait=False)
         if self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
         logging.info("MCP Server stopped")
 
 
-def run_server(port: int, dir, configs: Dict[str, ServiceConfig], autoscan: bool):
+def run_server(port: int, dir, configs: Dict[str, Service], autoscan: bool):
     mcp_server = OpenActionServer(port, dir, configs, autoscan)
     try:
         mcp_server.start()
@@ -581,4 +546,5 @@ if __name__ == '__main__':
 
 
 
-# test with npx @modelcontextprotocol/inspector node build\index.js
+# test with
+# npx @modelcontextprotocol/inspector node build\index.js

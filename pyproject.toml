@@ -22,6 +22,7 @@ dependencies = [
     "fastmcp==3.2.4",
     "zeroconf>=0.148.0",
     "platformdirs>=4.9.6",
+    "astral>=3.2"
 ]
 
 [tool.setuptools]

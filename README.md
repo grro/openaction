@@ -1,9 +1,9 @@
 # OpenAction
 
-**OpenAction** is an AI-native orchestration framework for the Agentic Home.
+**OpenAction** is an AI-native action framework for the Agentic Home.
 
 Move beyond rigid "If-This-Then-That" rules and tedious UI-based configurations. Powered by AI agent technology,
-OpenAction replaces traditional smart home solutions with flexible, adaptive logic. It translates natural language
+OpenAction replaces traditional smart home solutions with flexible, adaptive logic. It help to translate natural language
 intent into dynamic, executable scripts — giving your smart home the ability to adapt, reason, and act.
 
 ---
@@ -19,13 +19,13 @@ intent into dynamic, executable scripts — giving your smart home the ability t
 
 ## Architecture & Workflow
 
-The system acts as a bridge between high-level reasoning (LLMs) and low-level hardware control:
+The system acts as a bridge between high-level reasoning (Agents) and low-level hardware control:
 
 1.  **The Intent:** The user describes a goal to an MCP-capable client (e.g., Claude Desktop): *"If it’s dark outside and someone is home, turn on the living room light. If we’re away, activate 'Vacation Mode' to simulate presence by randomly toggling lights for 10 minutes to 90 minutes, ending no later than 11 PM."*
-2.  **The Translation:** The LLM uses the **OpenAction MCP Server** tools to inspect available devices and writes a custom Python script.
+2.  **The Translation:** The Agent uses the **OpenAction MCP Server** tools to inspect available devices and writes a custom Python script.
 3.  **The Registration:** OpenAction stores the script and sets up the necessary triggers (e.g., polling a weather API or listening for a sensor change).
 4.  **The Execution:** When triggered, the script runs in a local sandbox, calling the endpoints of connected **Sensors & Actuators**.
 
 ---
 
-![overview.png](overview.png)
+<img src="overview.png" alt="overview.png" width="70%">
