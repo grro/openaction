@@ -1,0 +1,14 @@
+Die Steuerung des Bürorollladens erfolgt grundsätzlich automatisiert nach dem Sonnenstand: Er öffnet sich bei
+Sonnenaufgang (jedoch frühestens um 06:00 Uhr und spätestens um 09:00 Uhr) und schließt sich bei Sonnenuntergang
+(frühestens um 16:00 Uhr und spätestens um 22:00 Uhr).
+Wird der Rollladen manuell per Schalter oder App bedient, hat dieser Befehl Priorität. Die Automatik wird in diesem
+ Fall temporär ausgesetzt und greift erst wieder beim nächsten regulär geplanten Schaltzeitpunkt ein
+
+Steht der benötigte Service über mehrere Protokolle zur Verfügung, so ist MCP vorzuziehen. Steht der benötigte
+Service lokal (als Bibliothek) bereit, so hat dies die höchste Priorität.
+
+
+
+Wenn niemand anwesend ist, muss das System in den Einbruchschutzmodus wechseln. In diesem Modus wird
+der Rollladen in zufälligen Abständen für eine zufällige Dauer von 15 bis 60 Minuten ganz oder teilweise geschlossen.
+Dies soll eine Anwesenheit vortäuschen. Sobald jemand zu Hause ist, wechselt das System in den Normalmodus.
