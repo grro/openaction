@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional, Set
 
 from api.store import Store
 from api.task import Task
+from api.subscription import  Subscription
 from store_impl import SimpleStore, ScopedStore
+
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,16 @@ class TaskResult:
 
 
 
+class SubscriptionManager(Subscription):
+
+    def __init__(self, task: TaskAdapter):
+        self.task = task
+
+    def notify(self, path: str):
+        if path in self.task.subscripted_to:
+            self.task.safe_run(f"subscription:{path}")
+
+
 
 def when(target: str):
     """
@@ -129,6 +141,7 @@ class TaskAdapter:
                  props: Dict[str, Any]):
         self._scoped_store = store
         self._executor = executor
+        self._subscription = SubscriptionManager(self)
         self.name = name
         self.props = props
         self.code = code
@@ -139,7 +152,7 @@ class TaskAdapter:
         self._task_instance = self.instantiate()
         self.run_on_start = False
         self.cron_expression = None
-        self.subscriptions = set()
+        self.subscripted_to = set()
         self._parse_triggers()
 
 
@@ -184,7 +197,7 @@ class TaskAdapter:
                 # Extract the item name. e.g., "Item gMotion_Sensors changed" -> "gMotion_Sensors"
                 parts = trigger.split(" ")
                 if len(parts) >= 2:
-                    self.subscriptions.add(parts[1])
+                    self.subscripted_to.add(parts[1])
 
 
     def instantiate(self) -> Task:
@@ -193,6 +206,7 @@ class TaskAdapter:
             self._namespace = {
                 "__name__": f"task_{self.name}",
                 "Store": Store,
+                "Subscription": Subscription,
                 "Task": Task,
                 "when": when
             }
@@ -217,7 +231,7 @@ class TaskAdapter:
                 raise ValueError(f"No class implementing the 'Task' interface found in the script for '{self.name}'.")
 
             # Instantiate and return the matched class
-            return user_class(self._scoped_store)
+            return user_class(self._scoped_store, self._subscription)
 
         except SyntaxError as e:
             # 1. Format the code with line numbers and point to the error line
@@ -262,12 +276,6 @@ class TaskAdapter:
         """Clears all persistent state for this task."""
         for key in self._scoped_store.keys():
             self._scoped_store.delete(key)
-
-    @property
-    def props_observed(self) -> Set[PropertiesObserved]:
-        """Returns the set of properties this task is observing, if any."""
-        raw_props = self.props.get("props_observed", [])
-        return {PropertiesObserved.from_string(p) for p in raw_props}
 
     @property
     def created_at(self) -> datetime:
