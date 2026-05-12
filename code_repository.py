@@ -73,25 +73,28 @@ class Image:
     def unit_path(self) :
         return  Path(self.codedir) /  self.unit_name
 
-    def _get_paths(self) -> tuple[Path, Path]:
+    def _get_paths(self) -> tuple[Path, Path, Path]:
         """Helper to generate standard file paths for a given task name."""
         return (
             self.unit_path / f"{self.unit_name}.py",
-            self.unit_path / f"{self.unit_name}.props"
+            self.unit_path / f"{self.unit_name}.props",
+            self.unit_path / f"{self.unit_name}.desc"
         )
 
-    def write_data(self, code: str, props: Dict[str, Any]) -> None:
-        code_file, props_file = self._get_paths()
+    def write_data(self, code: str, desc: str ,props: Dict[str, Any]) -> None:
+        code_file, props_file, desc_file = self._get_paths()
 
         # Write files
         code_file.write_text(code, encoding="utf-8")
         props_file.write_text(json.dumps(props, indent=2), encoding="utf-8")
+        props_file.write_text(desc, encoding="utf-8")
 
 
-    def read(self) -> tuple[str, dict[str, Any]]:
-        code_file, props_file = self._get_paths()
+    def read(self) -> tuple[str, str, dict[str, Any]]:
+        code_file, props_file, desc_file = self._get_paths()
 
         task_code = code_file.read_text(encoding="utf-8")
+
         try:
             if props_file.exists():
                 props = json.loads(props_file.read_text(encoding="utf-8"))
@@ -100,7 +103,12 @@ class Image:
         except json.JSONDecodeError:
             props = {}
 
-        return task_code, props
+        if desc_file.exists():
+            desc = desc_file.read_text(encoding="utf-8")
+        else:
+            desc = ""
+
+        return task_code, desc, props
 
 
 class CodeRepository:

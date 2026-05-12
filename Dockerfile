@@ -12,6 +12,7 @@ RUN mkdir app
 WORKDIR /etc/app
 ADD *.py /etc/app/
 ADD api/*.py /etc/app/api/
+ADD examples/*.py /etc/app/examples/
 ADD requirements.txt /etc/app/.
 RUN pip install -r requirements.txt
 

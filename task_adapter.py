@@ -92,11 +92,13 @@ class TaskAdapter:
                  store: Store,
                  name: str,
                  code: str,
+                 desc: str,
                  props: Dict[str, Any]):
         self._scoped_store = store
         self._executor = executor
         self._subscription = SubscriptionManager(self)
         self.name = name
+        self.description = desc
         self.props = props
         self.code = code
         self.last_executions: List[TaskResult] = list()
@@ -234,10 +236,6 @@ class TaskAdapter:
     @property
     def created_at(self) -> datetime:
         return datetime.fromisoformat(self.props.get("created_at", datetime.now().isoformat()))
-
-    @property
-    def description(self) -> str:
-        return self.props.get("description", "False")
 
     @property
     def is_test_task(self) -> bool:
@@ -448,11 +446,13 @@ class TaskAdapterFactory:
     def restore(self,
                 name: str,
                 code: str,
+                desc: str,
                 props: Dict[str, Any]):
 
         return TaskAdapter(self._executor,
                            ScopedStore(self._store, name),
                            name,
                            code,
+                           desc,
                            props)
 

@@ -37,7 +37,7 @@ class TaskAdapterRepository:
         task = self._task_factory.create(name, code, description, ttl, is_test)
 
         image = self._code_registry.create_image(name)
-        image.write_data(task.code, task.props)
+        image.write_data(task.code, description, task)
 
         self._add_task(name, task, reason="newly registered")
 
@@ -108,8 +108,8 @@ class TaskAdapterRepository:
     def _scan(self) -> None:
         load_task_names = set()
         for image in self._code_registry.list_images():
-            code, props = image.read()
-            task = self._task_factory.restore(image.unit_name, code, props)
+            code, desc, props = image.read()
+            task = self._task_factory.restore(image.unit_name, code, desc, props)
             load_task_names.add(task.name)
 
             if task.name in self.tasks.keys():
@@ -125,7 +125,7 @@ class TaskAdapterRepository:
 
     def _clean_up(self):
         for image in self._code_registry.list_images():
-            code, props = image.read()
-            task = self._task_factory.restore(image.unit_name, code, props)
+            code, desc, props = image.read()
+            task = self._task_factory.restore(image.unit_name, code, desc, props)
             if task.is_expired():
                 self.deregister(task.name, reason="TTL expired")
