@@ -56,110 +56,98 @@ class OpenActionServer:
             Use this to determine environment capabilities and which libraries can be imported inside tasks.
             """
             try:
-                # Fetch the clean Python version string (e.g., "3.11.4")
                 python_version = sys.version.split()[0]
-
-                # Retrieve all installed distributions
                 dists = importlib.metadata.distributions()
-
-                # Extract name and version, filtering out empty names
                 packages = [
                     (dist.metadata['Name'], dist.version)
                     for dist in dists
                     if dist.metadata.get('Name')
                 ]
 
-                # 1. Environment Header
                 report = [
                     f"### 🐍 Python Environment: `v{python_version}`",
                     "---"
                 ]
 
-                # 2. Package List
                 if not packages:
                     report.append("No external Python packages found in the current environment.")
                 else:
-                    # Sort case-insensitively for better readability
                     packages.sort(key=lambda x: x[0].lower())
-
                     report.extend([
                         "### 📦 Available External Packages",
                         "> **Important Notes for Scripting:**",
-                        "> 1. **Standard Libraries:** All built-in Python modules for this version (e.g., `json`, `datetime`, `math`, `re`, `urllib`) are implicitly available and are *not* listed below.",
-                        "> 2. **Import Names:** The names below are package distribution names. The actual import statement might differ slightly (e.g., package `PyYAML` is imported as `yaml`).",
+                        "> 1. **Standard Libraries:** All built-in Python modules for this version are implicitly available.",
+                        "> 2. **Import Names:** The names below are package distribution names. The actual import statement might differ slightly.",
                         ""
                     ])
-
-                    # Format cleanly. E.g., "- **requests** (v2.31.0)"
                     report.extend([f"- **`{name}`** `(v{version})`" for name, version in packages])
 
                 return "\n".join(report)
-
 
             except Exception as e:
                 logger.error(f"Failed to list modules: {e}", exc_info=True)
                 return f"Error: Could not retrieve the environment details: {type(e).__name__} - {str(e)}"
 
 
+
+
         @self.mcp.tool()
         def list_example_tasks() -> str:
             """
             Retrieves the source code of all example tasks.
-            Use this to reference best practices, formatting, and expected logic patterns
-            when creating new custom tasks for the OpenAction system.
             """
             try:
-                # Resolve the absolute path to the 'api' directory relative to this file
-                api_dir = Path(__file__).parent / "examples"
+                examples_dir = (Path(__file__).parent / "examples").resolve()
 
-                if not api_dir.is_dir():
-                    return "Error: No 'examples' directory found."
+                if not examples_dir.is_dir():
+                    return f"Error: No 'examples' directory found at {examples_dir}."
 
                 examples = []
-
-                for file_path in api_dir.glob("*"):
+                for file_path in examples_dir.glob("*.py"):
                     if file_path.is_file():
-                        # read_text safely opens, reads, and closes the file automatically
                         content = file_path.read_text(encoding="utf-8")
-                        examples.append(f"--- {file_path.name} ---\n```python\n{content}\n```")
+
+                        task_block = (
+                            f"### 📄 `{file_path.name}`\n"
+                            f"```python\n{content}\n```"
+                        )
+                        examples.append(task_block)
 
                 if not examples:
-                    return "No examples classes found in the 'api' directory."
+                    return "No example Python scripts found in the 'examples' directory."
 
-                return "\n\n".join(examples)
+                return "\n\n---\n\n".join(examples)
 
             except Exception as e:
-                # Providing the exception type makes debugging significantly easier
                 return f"Error reading examples directory: {type(e).__name__} - {e}"
-
 
 
         @self.mcp.tool()
         def list_api() -> str:
-
+            """
+            Retrieves the source code of the API base classes.
+            """
             try:
-                # Resolve the absolute path to the 'api' directory relative to this file
-                api_dir = Path(__file__).parent / "api"
+                api_dir = (Path(__file__).parent / "api").resolve()
 
                 if not api_dir.is_dir():
-                    return "Error: No 'api' directory found."
+                    return f"Error: No 'api' directory found at {api_dir}."
 
                 apis = []
-
-                for file_path in api_dir.glob("*"):
+                # FIX: Applied the .py restriction here as well for safety
+                for file_path in api_dir.glob("*.py"):
                     if file_path.is_file():
-                        # read_text safely opens, reads, and closes the file automatically
                         content = file_path.read_text(encoding="utf-8")
                         apis.append(f"--- {file_path.name} ---\n```python\n{content}\n```")
 
                 if not apis:
-                    return "No api classes found in the 'api' directory."
+                    return "No api python files found in the 'api' directory."
 
                 return "\n\n".join(apis)
 
             except Exception as e:
-                # Providing the exception type makes debugging significantly easier
                 return f"Error reading API directory: {type(e).__name__} - {e}"
+
 
 
         @self.mcp.tool()
@@ -233,18 +221,18 @@ class OpenActionServer:
                           script: str,
                           description: str) -> str:
             """
-            Registers a new permanent Python-based task
+            Registers a new permanent, Python-based automation task in the OpenAction system.
 
             Args:
-                name (str): A unique, URI-safe identifier (alphanumeric, hyphens, underscores, or dots).
-                    Note: Production tasks MUST NOT start with the 'test_' prefix.
-                script (str): The Python source code extending the abstract `Task` class from the API.
-                    Refer to the `list_api` tool to view the required class interface.
-                    Note: Your script does not need to import the `Task` and `Store` definitions;
-                    they are automatically injected into the execution environment.
-                    Constraint: Consolidate all logic for a specific device (e.g., a single heater
-                    or roller shutter) into one script rather than creating multiple fragmented tasks.
-                description (str): A brief, clear explanation of the task's logic and purpose.
+                name (str): A unique, URI-safe identifier (alphanumeric, hyphens, underscores).
+                    WARNING: Production tasks MUST NOT start with the 'test_' prefix.
+                script (str): The Python source code. MUST define a class inheriting from the
+                    abstract `Task` class (use `list_api` to view the required interface).
+                    *Injection Note:* Do NOT import `Task` or `Store` in your script; they are
+                    automatically injected into the execution namespace.
+                    *Architecture Constraint:* Consolidate logic. Create ONE script per target
+                    device/service (e.g., a single heater) rather than fragmenting into multiple tasks.
+                description (str): A clear explanation of what the task does and its intended triggers.
 
             Returns:
                 str: A confirmation message indicating the registration status.
@@ -252,19 +240,21 @@ class OpenActionServer:
             ==============================
             MANDATORY PROTOCOLS
             ==============================
-            Error Handling & Retries:
-                The script MUST evaluate all external service responses for error states.
-                If a failure occurs, an Exception MUST be raised. This ensures the system
-                triggers the automatic retry logic (1-minute delay).
+            1. ERROR HANDLING & RETRIES:
+               - The script MUST evaluate external service responses for error states.
+               - If an external call fails, you MUST `raise Exception("...")`. The OpenAction
+                 engine catches this and triggers automatic retry logic (1-minute delay). Do not
+                 swallow errors silently.
 
-            Validation & Consolidation (Required):
-                1. Check Existing: Verify if a task already exists for the target device.
-                   If found, MERGE your logic into the existing script.
-                2. Test-First: You MUST use the `execute_task` tool to validate your script
-                   logic and JSON parsing BEFORE calling `register_task`.
-                   *Discovery Context:* While writing the task, you should use the `list_available_services`
-                   and `list_available_modules` tools to map the available environment. This is
-                   critical to ensure your script runs correctly before permanent deployment.
+            2. PRE-REGISTRATION VALIDATION (Strict Enforcement):
+               - STEP A (Check Existing): Use the `list_tasks` and `get_task` tools to verify if a
+                 task already exists for the target device. If it does, fetch it and MERGE your
+                 new logic into it. Do not create duplicates.
+               - STEP B (Map Environment): Use `list_available_services` and `list_available_modules`
+                 to ensure your required endpoints and libraries actually exist in the environment.
+               - STEP C (Test First): You MUST execute your code using the `execute_task` tool to
+                 validate syntax, logic, and JSON parsing BEFORE calling `register_task`.
+                 Blind registration is strictly prohibited.
             """
 
             try:
