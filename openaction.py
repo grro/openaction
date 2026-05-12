@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 class OpenActionServer:
 
-    def __init__(self, port: int, dir: str, configs: Dict[str, Service], autoscan: bool, host: str = "0.0.0.0"):
-        self.name = 'OpenAction'
+    def __init__(self, name: str, port: int, dir: str, configs: Dict[str, Service], autoscan: bool, host: str = "0.0.0.0"):
+        self.name = name
         self.host = host
         self.port = port
         self.store = SimpleStore(name="state", directory=dir)
@@ -534,8 +534,8 @@ class OpenActionServer:
         logging.info("MCP Server stopped")
 
 
-def run_server(port: int, dir, configs: Dict[str, Service], autoscan: bool):
-    mcp_server = OpenActionServer(port, dir, configs, autoscan)
+def run_server(name: str,  port: int, dir, configs: Dict[str, Service], autoscan: bool):
+    mcp_server = OpenActionServer(name, port, dir, configs, autoscan)
     try:
         mcp_server.start()
         while True:
@@ -564,11 +564,5 @@ if __name__ == '__main__':
     config = Configs.read(sys.argv[3])
     autoscan = sys.argv[4].upper() == 'ON'
 
-    run_server(port, work_dir, config, autoscan)
+    run_server('OpenAction', port, work_dir, config, autoscan)
 
-
-
-
-
-# test with
-# npx @modelcontextprotocol/inspector node build\index.js
