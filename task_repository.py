@@ -2,7 +2,7 @@ import logging
 import threading
 from concurrent.futures.thread import ThreadPoolExecutor
 from time import sleep
-from typing import List, Optional
+from typing import Optional
 
 from code_repository import CodeRepository
 from store_impl import SimpleStore
@@ -48,25 +48,22 @@ class TaskAdapterRepository:
             is_new = name not in self.tasks.keys()
             is_updated = not is_new and self.tasks[name].created_at != task.created_at
 
-            if is_new or is_updated:
-                self.tasks[name] = task
+            if not task.is_test_task:
+                if is_new or is_updated:
+                    self.tasks[name] = task
 
-                task.activate()
-                if task.run_on_start:
-                    if is_new:
-                        logger.info(f"Task '{name}' added to registry with load on start (Reason: {reason})")
+                    task.activate()
+                    if task.run_on_start:
+                        if is_new:
+                            logger.info(f"Task '{name}' added to registry with load on start (Reason: {reason})")
+                        else:
+                            logger.info(f"Task '{name}' re-added to registry with load on start (Reason: {reason})")
+                        task.safe_run("run_on_start")
                     else:
-                        logger.info(f"Task '{name}' re-added to registry with load on start (Reason: {reason})")
-                    task.safe_run("run_on_start")
-                else:
-                    if is_new:
-                        logger.info(f"Task '{name}' added to registry (Reason: {reason})")
-                    else:
-                        logger.info(f"Task '{name}' re-added to registry (Reason: {reason})")
-
-                #if len(task.props_observed) > 0:
-                 #   for prop_observed in task.props_observed:
-                  #      self._subscription_service.subscribe(prop_observed.service, prop_observed.prop, prop_observed.min_interval_sec, task)
+                        if is_new:
+                            logger.info(f"Task '{name}' added to registry (Reason: {reason})")
+                        else:
+                            logger.info(f"Task '{name}' re-added to registry (Reason: {reason})")
 
     def deregister(self, name: str, reason: str) -> None:
         task = self.tasks.pop(name, None)

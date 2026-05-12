@@ -6,7 +6,7 @@ import importlib.metadata
 from pathlib import Path
 from time import sleep
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Optional
+from typing import Dict
 from datetime import datetime, timedelta
 from fastmcp import FastMCP
 
@@ -99,6 +99,40 @@ class OpenActionServer:
             except Exception as e:
                 logger.error(f"Failed to list modules: {e}", exc_info=True)
                 return f"Error: Could not retrieve the environment details: {type(e).__name__} - {str(e)}"
+
+
+        @self.mcp.tool()
+        def list_example_tasks() -> str:
+            """
+            Retrieves the source code of all example tasks.
+            Use this to reference best practices, formatting, and expected logic patterns
+            when creating new custom tasks for the OpenAction system.
+            """
+            try:
+                # Resolve the absolute path to the 'api' directory relative to this file
+                api_dir = Path(__file__).parent / "examples"
+
+                if not api_dir.is_dir():
+                    return "Error: No 'examples' directory found."
+
+                examples = []
+
+                for file_path in api_dir.glob("*"):
+                    if file_path.is_file():
+                        # read_text safely opens, reads, and closes the file automatically
+                        content = file_path.read_text(encoding="utf-8")
+                        examples.append(f"--- {file_path.name} ---\n```python\n{content}\n```")
+
+                if not examples:
+                    return "No examples classes found in the 'api' directory."
+
+                return "\n\n".join(examples)
+
+            except Exception as e:
+                # Providing the exception type makes debugging significantly easier
+                return f"Error reading examples directory: {type(e).__name__} - {e}"
+
+
 
         @self.mcp.tool()
         def list_api() -> str:

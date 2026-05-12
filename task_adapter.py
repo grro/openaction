@@ -3,9 +3,8 @@ import logging
 import io
 from contextlib import redirect_stdout, redirect_stderr
 from concurrent.futures.thread import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from api.store import Store
 from api.task import Task
@@ -14,51 +13,6 @@ from store_impl import SimpleStore, ScopedStore
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True, order=True)
-class PropertiesObserved:
-    service: str
-    prop: str
-    min_interval_sec: int = field(default=10, compare=False)
-
-    @classmethod
-    def from_string(cls, config: str) -> "PropertiesObserved":
-        """
-        Parses a configuration string into a PropertiesObserved instance.
-        Expected format: "service_name#property_name [interval_in_seconds]"
-        """
-        if not config or not config.strip():
-            raise ValueError("Configuration string cannot be empty.")
-
-        # .split() with no arguments splits on ANY whitespace and removes duplicates
-        parts = config.strip().split()
-        entity = parts[0]
-
-        if "#" not in entity:
-            raise ValueError(f"Invalid format '{entity}'. Expected 'service#prop'.")
-
-        # Split with maxsplit=1 ensures safe parsing even if the property contains a '#'
-        service, prop = entity.split("#", 1)
-
-        interval = 10
-        if len(parts) > 1:
-            try:
-                interval = int(parts[1])
-            except ValueError:
-                logger.warning(f"Invalid interval '{parts[1]}' in config '{config}'. Defaulting to 10s.")
-                interval = 10
-
-        # Use 'cls' instead of hardcoding the class name
-        return cls(service=service.strip(), prop=prop.strip(), min_interval_sec=interval)
-
-    @property
-    def identity(self) -> str:
-        """Returns a unique identifier for dictionary keys or logging."""
-        return f"{self.service}#{self.prop}"
-
-    def __str__(self) -> str:
-        return f"PropertiesObserved({self.identity}, {self.min_interval_sec}s)"
 
 
 
@@ -403,15 +357,17 @@ class TaskAdapter:
 
     def activate(self):
         self.is_activated = True
+        try:
+            self._task_instance.on_activate()
+        except Exception as e:
+            logger.error(f"Error    activating task '{self.name}': {e}", exc_info=True)
 
     def deactivate(self):
         self.is_activated = False
-        # Safety check: Only call if the task instance exists and implements the method
-        if hasattr(self, '_task_instance') and hasattr(self._task_instance, "on_deactivate"):
-            try:
-                self._task_instance.on_destroy()
-            except Exception as e:
-                logger.error(f"Error deactivating task '{self.name}': {e}", exc_info=True)
+        try:
+            self._task_instance.on_deactivate()
+        except Exception as e:
+            logger.error(f"Error deactivating task '{self.name}': {e}", exc_info=True)
 
 
     def __str__(self) -> str:

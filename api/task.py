@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Any
 
 class Task(ABC):
     """
@@ -11,6 +10,8 @@ class Task(ABC):
     def __init__(self, store: 'Store', subscription: 'Subscription') -> None: # type: ignore
         """
         Initializes the task with a persistent storage backend and event handler.
+        Please consider that no processing/threads should be started inside the __init__ method.
+        Processing/Thread can be started inside the on_activate method.
 
         Args:
             store (Store): A key-value store provided by the host environment
@@ -26,12 +27,24 @@ class Task(ABC):
         self.subscription = subscription
 
     @abstractmethod
-    def on_destroy(self) -> None:
+    def on_activate(self) -> None:
+        """
+        Lifecycle hook: Executed once when the task is loaded and ready.
+
+        Use this method to start background processing, initialize continuous
+        polling loops, or establish initial states without blocking the
+        class instantiation in __init__.
+        """
+        pass
+
+    @abstractmethod
+    def on_deactivate(self) -> None:
         """
         Lifecycle hook: Executed once during task removal or system shutdown.
 
         Use this method for teardown logic, such as closing network connections,
-        persisting final buffer states, or logging a graceful exit message.
+        persisting final buffer states, stopping background threads, or logging
+        a graceful exit message.
         """
         pass
 
@@ -44,10 +57,13 @@ class Task(ABC):
         To trigger the method execution, it must be decorated with one or more `@when` statements.
         Supported triggers are:
          * `@when("Rule loaded")`: Triggers the execution when the rule has been (re)loaded.
+         * `@when("Time cron <cron expression>")`: Triggers the execution based on a
+            cron expression with 5 fields (e.g., `@when("Time cron */5 * * * *")`).
          * `@when("Item <path> changed")`: Triggers the execution when a change event has
             occurred (e.g., `@when("Item sensor://metrics/grid_power changed")`).
-         * `@when("Time cron <cron expression>")`: Triggers the execution based on a
-            cron expression with 5 fields (e.g., `@when("Time cron 0 15 10 * *")`).
+            If the underlying service provides a push or notification channel, this trigger
+            is typically used to achieve near real-time processing. Often, a cron trigger
+            (e.g., every 1 minute) is used alongside it as a fallback.
 
         Returns:
             str: A summary of the execution outcome (e.g., "Lights turned off").
