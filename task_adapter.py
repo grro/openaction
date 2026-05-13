@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 
 class TaskResult:
 
-    def __init__(self, trigger: str, elapsed: timedelta, output: str = None, error: str = None):
+    def __init__(self, task: TaskAdapter, trigger: str, elapsed: timedelta, output: str = None, error: str = None):
         self.date = datetime.now()
+        self.taskname = task.name
         self.trigger = trigger
         self.elapsed = elapsed
         self.output = output
@@ -31,7 +32,7 @@ class TaskResult:
         elapsed_sec = f"{self.elapsed.total_seconds():.3f}s"
 
         # Primary header line
-        lines = [f"TaskResult [{status}] | Trigger: '{self.trigger}' | Elapsed: {elapsed_sec}"]
+        lines = [f"{self.taskname} executed [{status}] | Trigger: '{self.trigger}' | Elapsed: {elapsed_sec}"]
 
         # Handle optional error (multiline safe)
         if self.error:
@@ -271,7 +272,7 @@ class TaskAdapter:
         except Exception as e:
             msg = f"Execution failed for task '{self.name}': {e}"
             logger.error(msg)
-            task_result = TaskResult(trigger, timedelta(0), error=msg)
+            task_result = TaskResult(self, trigger, timedelta(0), error=msg)
             self._add_task_result(task_result)
             return task_result
 
@@ -282,13 +283,13 @@ class TaskAdapter:
         """
 
         start = datetime.now()
-        task_result = TaskResult(trigger, start-start, error="Unknown error")  # Default in case of unexpected failure before assignment
+        task_result = TaskResult(self, trigger, start-start, error="Unknown error")  # Default in case of unexpected failure before assignment
 
         # Acquire lock without blocking to prevent overlapping executions of the same task
         if self.state == self.RUNNING:
             msg = f"Task '{self.name}' is already running. Skipping this execution cycle."
             logger.debug(msg)
-            task_result = TaskResult(trigger, timedelta(0), error=msg)
+            task_result = TaskResult(self, trigger, timedelta(0), error=msg)
             self._add_task_result(task_result)
             return task_result
 
@@ -296,18 +297,16 @@ class TaskAdapter:
         timeout_sec = self.props.get("timeout", self.default_timeout_sec)
         try:
             self.state = self.RUNNING
-            logger.info("Executing task '%s' (trigger '%s')", self.name, trigger)
-
             future = self._executor.submit(self._execute_task)
             printed_output = future.result(timeout=timeout_sec)
             elapsed = datetime.now() - start
-            task_result = TaskResult(trigger, elapsed, output=printed_output)
+            task_result = TaskResult(self, trigger, elapsed, output=printed_output)
             logger.info(task_result)
         except concurrent.futures.TimeoutError as te:
             error_msg = f"Execution failed (TimeoutError; timeout {timeout_sec} seconds) for task '{self.name}': {str(te)}"
             logger.warning(error_msg)
             elapsed = datetime.now() - start
-            task_result = TaskResult(trigger, elapsed, error=error_msg)
+            task_result = TaskResult(self, trigger, elapsed, error=error_msg)
 
         except Exception as e:
             elapsed = datetime.now() - start
@@ -317,7 +316,7 @@ class TaskAdapter:
                 logger.warning(f"{error_msg}\nPartial Output:\n{partial_output}")
             else:
                 logger.warning(error_msg)
-            task_result = TaskResult(trigger, elapsed, output=partial_output, error=error_msg)
+            task_result = TaskResult(self, trigger, elapsed, output=partial_output, error=error_msg)
 
         finally:
             self.state = self.IDLING
