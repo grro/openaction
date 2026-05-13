@@ -562,7 +562,6 @@ if __name__ == '__main__':
     port = int(sys.argv[1])
     work_dir = sys.argv[2]
     config = Configs.read(sys.argv[3])
-    autoscan = sys.argv[4].upper() == 'ON'
 
-    run_server('OpenAction', port, work_dir, config, autoscan)
+    run_server('OpenAction', port, work_dir, config, True)
 

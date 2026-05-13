@@ -127,9 +127,20 @@ class MDNSRegistry:
 
                 srvs = {service.name: service.to_dict() for service in self._services.values()}
                 self._store.put("services", json.dumps(srvs))
+
+                self._clean_up()
             except Exception as e:
                 logger.warning(f"Error in MDNSServiceRegistry loop: {e}")
             sleep(60)
+
+
+    def _clean_up(self, time_out_days = 30):
+        now = datetime.now()
+        expired = [name for name, service in self._services.items() if (now - service.last_seen).total_seconds() > (time_out_days * 24*60*60*60)]
+        for name in expired:
+            logger.info(f"mDNS: Removing expired service '{name}'")
+            del self._services[name]
+
 
     def _scan(self, timeout_seconds: float) -> Dict[str, MDNSService]:
         discovered: Dict[str, MDNSService] = dict()

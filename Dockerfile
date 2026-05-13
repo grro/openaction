@@ -1,10 +1,8 @@
 FROM python:3-alpine
 
 ENV port 9485
-ENV dir /etc/work
-ENV mcp_config ""
-ENV relay_config ""
-ENV autoscan "ON"
+ENV work_dir /etc/work
+ENV devices ""
 
 
 RUN cd /etc
@@ -16,6 +14,6 @@ ADD examples/*.py /etc/app/examples/
 ADD requirements.txt /etc/app/.
 RUN pip install -r requirements.txt
 
-CMD ["sh", "-c", "python /etc/app/openaction.py \"$port\" \"$dir\" \"$mcp_config\" \"$relay_config\" \"$autoscan\""]
+CMD ["sh", "-c", "python /etc/app/openaction.py \"$port\" \"$work_dir\" \"$devices\" "]
 
 
