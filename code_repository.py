@@ -87,7 +87,7 @@ class Image:
         # Write files
         code_file.write_text(code, encoding="utf-8")
         props_file.write_text(json.dumps(props, indent=2), encoding="utf-8")
-        props_file.write_text(desc, encoding="utf-8")
+        desc_file.write_text(desc, encoding="utf-8")
 
 
     def read(self) -> tuple[str, str, dict[str, Any]]:

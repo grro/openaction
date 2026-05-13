@@ -37,7 +37,7 @@ class TaskAdapterRepository:
         task = self._task_factory.create(name, code, description, ttl, is_test)
 
         image = self._code_registry.create_image(name)
-        image.write_data(task.code, description, task)
+        image.write_data(task.code, description, task.props)
 
         self._add_task(name, task, reason="newly registered")
 
