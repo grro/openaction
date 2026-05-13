@@ -440,6 +440,7 @@ class TaskAdapterFactory:
                            ScopedStore(self._store, name),
                            name,
                            code,
+                           description,
                            props)
 
 
