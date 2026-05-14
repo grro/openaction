@@ -25,7 +25,7 @@ class TaskAdapterRepository:
         self._executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
         logger.info("TaskRepository initialized (Taskexecutor started)")
 
-    def register(self, name: str, code: str, description: str, ttl: Optional[int], is_test: bool) -> None:
+    def register(self, name: str, code: str, description: str) -> None:
 
         if name.startswith("test_"):
             raise ValueError("Task name cannot contain dots ('.')")
@@ -34,7 +34,7 @@ class TaskAdapterRepository:
             if char in name:
                 raise ValueError("Task name cannot contain '" + char + "'")
 
-        task = self._task_factory.create(name, code, description, ttl, is_test)
+        task = self._task_factory.create(name, False, False, code, description, None)
 
         image = self._code_registry.create_image(name)
         image.write_data(task.code, description, task.props)
@@ -48,22 +48,21 @@ class TaskAdapterRepository:
             is_new = name not in self.tasks.keys()
             is_updated = not is_new and self.tasks[name].created_at != task.created_at
 
-            if not task.is_test_task:
-                if is_new or is_updated:
-                    self.tasks[name] = task
+            if is_new or is_updated:
+                self.tasks[name] = task
 
-                    task.activate()
-                    if task.run_on_start:
-                        if is_new:
-                            logger.info(f"Task '{name}' added to registry with load on start (Reason: {reason})")
-                        else:
-                            logger.info(f"Task '{name}' re-added to registry with load on start (Reason: {reason})")
-                        task.safe_run("run_on_start")
+                task.activate()
+                if task.run_on_start:
+                    if is_new:
+                        logger.info(f"Task '{name}' added to registry with load on start (Reason: {reason})")
                     else:
-                        if is_new:
-                            logger.info(f"Task '{name}' added to registry (Reason: {reason})")
-                        else:
-                            logger.info(f"Task '{name}' re-added to registry (Reason: {reason})")
+                        logger.info(f"Task '{name}' re-added to registry with load on start (Reason: {reason})")
+                    task.safe_run("run_on_start", list())
+                else:
+                    if is_new:
+                        logger.info(f"Task '{name}' added to registry (Reason: {reason})")
+                    else:
+                        logger.info(f"Task '{name}' re-added to registry (Reason: {reason})")
 
     def deregister(self, name: str, reason: str) -> None:
         task = self.tasks.pop(name, None)
@@ -109,7 +108,7 @@ class TaskAdapterRepository:
         load_task_names = set()
         for image in self._code_registry.list_images():
             code, desc, props = image.read()
-            task = self._task_factory.restore(image.unit_name, code, desc, props)
+            task = self._task_factory.restore(image.unit_name, False, False, code, desc, props)
             load_task_names.add(task.name)
 
             if task.name in self.tasks.keys():
@@ -126,6 +125,6 @@ class TaskAdapterRepository:
     def _clean_up(self):
         for image in self._code_registry.list_images():
             code, desc, props = image.read()
-            task = self._task_factory.restore(image.unit_name, code, desc, props)
+            task = self._task_factory.restore(image.unit_name, False, False,code, desc, props)
             if task.is_expired():
                 self.deregister(task.name, reason="TTL expired")

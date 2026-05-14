@@ -7,8 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from api.store import Store
-from api.task import Task
-from api.subscription import  Subscription
+from api.task import BackgroundTask, AdhocTask
 from store_impl import SimpleStore, ScopedStore
 
 
@@ -53,23 +52,11 @@ class TaskResult:
 
 
 
-class SubscriptionManager(Subscription):
-
-    def __init__(self, task: TaskAdapter):
-        self.task = task
-
-    def notify(self, path: str):
-        if path in self.task.subscripted_to:
-            self.task.safe_run(f"subscription:{path}")
-
-
-
 def when(target: str):
     """
     Decorator to attach trigger conditions to a task's execute method.
     Examples:
         @when("Time cron 55 55 5 * * ?")
-        @when("Item gMotion_Sensors changed")
         @when("Rule loaded")
     """
     def decorated_method(function):
@@ -92,25 +79,29 @@ class TaskAdapter:
                  executor: ThreadPoolExecutor,
                  store: Store,
                  name: str,
+                 is_ephemeral: bool,
+                 is_test: bool,
                  code: str,
                  desc: str,
                  props: Dict[str, Any]):
         self._scoped_store = store
         self._executor = executor
-        self._subscription = SubscriptionManager(self)
         self.name = name
         self.description = desc
         self.props = props
         self.code = code
+        self.is_ephemeral = is_ephemeral
+        self.is_test = is_test
         self.last_executions: List[TaskResult] = list()
         self.default_timeout_sec = 30
         self.is_activated = False
         self.state = self.IDLING
-        self._task_instance = self.instantiate()
         self.run_on_start = False
         self.cron_expression = None
         self.subscripted_to = set()
+        self._task_instance = self.instantiate()
         self._parse_triggers()
+
 
 
     def __del__(self):
@@ -131,7 +122,7 @@ class TaskAdapter:
         triggers = getattr(method, '__triggers__', [])
 
         # Enforce the mandatory trigger rule
-        if not triggers:
+        if self.is_background_task and not triggers:
             raise ValueError(
                 f"Validation Error in task '{self.name}': The 'on_execute' method "
                 f"must be decorated with at least one '@when' trigger."
@@ -146,8 +137,8 @@ class TaskAdapter:
             elif trigger.lower().startswith("time cron "):
                 cron_expression = trigger[10:].strip()
                 fields = cron_expression.split()
-                if len(fields) != 5:
-                    raise ValueError(f"Invalid cron expression '{cron_expression}'. Expected 5 fields.")
+                if len(fields) not in (5, 6):
+                    raise ValueError(f"Invalid cron expression '{cron_expression}'. Expected 5 or 6 fields.")
                 self.cron_expression = cron_expression
 
             elif trigger.lower().startswith("item "):
@@ -157,14 +148,14 @@ class TaskAdapter:
                     self.subscripted_to.add(parts[1])
 
 
-    def instantiate(self) -> Task:
+    def instantiate(self):
         try:
             # Inject required dependencies directly into the script's namespace
             self._namespace = {
                 "__name__": f"task_{self.name}",
                 "Store": Store,
-                "Subscription": Subscription,
-                "Task": Task,
+                "BackgroundTask": BackgroundTask,
+                "AdhocTask": AdhocTask,
                 "when": when
             }
 
@@ -174,8 +165,19 @@ class TaskAdapter:
 
             user_class = None
             for obj in self._namespace.values():
-                # Check if it's a class, a subclass of Task, and NOT the base Task class itself
-                if isinstance(obj, type) and issubclass(obj, Task) and obj is not Task:
+
+                # Check if it's a background task
+                if isinstance(obj, type) and issubclass(obj, BackgroundTask) and obj is not BackgroundTask:
+                    if user_class is None:
+                        user_class = obj
+                    else:
+                        raise ValueError(
+                            f"Multiple classes implementing the 'Task' interface found in "
+                            f"the script for '{self.name}'. Please ensure only one class inherits from 'Task'."
+                        )
+
+                # Check if it's a ad hoc task
+                if isinstance(obj, type) and issubclass(obj, AdhocTask) and obj is not AdhocTask:
                     if user_class is None:
                         user_class = obj
                     else:
@@ -187,8 +189,7 @@ class TaskAdapter:
             if not user_class:
                 raise ValueError(f"No class implementing the 'Task' interface found in the script for '{self.name}'.")
 
-            # Instantiate and return the matched class
-            return user_class(self._scoped_store, self._subscription)
+            return user_class(self._scoped_store)
 
         except SyntaxError as e:
             # 1. Format the code with line numbers and point to the error line
@@ -235,12 +236,12 @@ class TaskAdapter:
             self._scoped_store.delete(key)
 
     @property
-    def created_at(self) -> datetime:
-        return datetime.fromisoformat(self.props.get("created_at", datetime.now().isoformat()))
+    def is_background_task(self) -> bool:
+        return isinstance(self._task_instance, BackgroundTask)
 
     @property
-    def is_test_task(self) -> bool:
-        return self.props.get("is_test", False)
+    def created_at(self) -> datetime:
+        return datetime.fromisoformat(self.props.get("created_at", datetime.now().isoformat()))
 
     @property
     def valid_to(self) -> Optional[datetime]:
@@ -265,10 +266,10 @@ class TaskAdapter:
             return None
         return datetime.now() - self.last_executions[-1].date
 
-    def safe_run(self, trigger: str):
+    def safe_run(self, trigger: str, params: List[str]):
         """Executes the task and ensures any unhandled exceptions are logged."""
         try:
-            return self.run(trigger)
+            return self.run(trigger, params)
         except Exception as e:
             msg = f"Execution failed for task '{self.name}': {e}"
             logger.error(msg)
@@ -276,7 +277,7 @@ class TaskAdapter:
             self._add_task_result(task_result)
             return task_result
 
-    def run(self, trigger: str) -> TaskResult:
+    def run(self, trigger: str, params: List[str]) -> TaskResult:
         """
         Executes the task logic within a dedicated thread.
         Handles locking, timeouts, and result logging.
@@ -297,7 +298,7 @@ class TaskAdapter:
         timeout_sec = self.props.get("timeout", self.default_timeout_sec)
         try:
             self.state = self.RUNNING
-            future = self._executor.submit(self._execute_task)
+            future = self._executor.submit(self._execute_task, params)
             printed_output = future.result(timeout=timeout_sec)
             elapsed = datetime.now() - start
             task_result = TaskResult(self, trigger, elapsed, output=printed_output)
@@ -324,7 +325,7 @@ class TaskAdapter:
 
         return task_result
 
-    def _execute_task(self) -> str:
+    def _execute_task(self, params: List[str]) -> str:
         """
         Executes the task instance's logic while capturing all console output.
         Returns a combined string of the logical return value and captured logs.
@@ -334,7 +335,10 @@ class TaskAdapter:
             # Capture both standard output (print) and standard error (warnings/logs)
             with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
                 # Execute the user-defined logic
-                result = self._task_instance.on_execute()
+                if isinstance(self._task_instance, BackgroundTask):
+                    result = self._task_instance.on_execute()
+                else:
+                    result = self._task_instance.on_execute(params)
 
         except Exception as e:
             # Attach any captured output to the exception for debugging
@@ -355,23 +359,23 @@ class TaskAdapter:
     def activate(self):
         self.is_activated = True
         try:
-            self._task_instance.on_activate()
+            if self.is_background_task:
+                self._task_instance.on_activate()
         except Exception as e:
-            logger.error(f"Error    activating task '{self.name}': {e}", exc_info=True)
+            logger.error(f"Error activating task '{self.name}': {e}", exc_info=True)
 
     def deactivate(self):
         self.is_activated = False
         try:
-            self._task_instance.on_deactivate()
+            if self.is_background_task:
+                self._task_instance.on_deactivate()
         except Exception as e:
             logger.error(f"Error deactivating task '{self.name}': {e}", exc_info=True)
 
-
     def __str__(self) -> str:
-        type_flag = "🧪 TEST" if getattr(self, 'is_test_task', False) else "🛡️ PROD"
 
         # 1. Header
-        lines = [f"Task [{type_flag}] | '{self.name}' | State: {self.state.upper()}"]
+        lines = [f"Task '{self.name}' | State: {self.state.upper()}"]
 
         # 2. Configuration Section
         triggers = []
@@ -425,19 +429,21 @@ class TaskAdapterFactory:
 
     def create(self,
                name: str,
+               is_ephemeral: bool,
+               is_test: bool,
                code: str,
                description: str,
-               ttl: Optional[int] = None,
-               is_test: bool = False):
+               ttl: Optional[int] = None):
 
         props: Dict [str, Any] = {  'created_at': datetime.now().isoformat(),
                                     'description': description,
-                                    'is_test': is_test,
                                     'ttl': -1 if ttl is None else ttl}
 
         return TaskAdapter(self._executor,
                            ScopedStore(self._store, name),
                            name,
+                           is_ephemeral,
+                           is_test,
                            code,
                            description,
                            props)
@@ -445,6 +451,8 @@ class TaskAdapterFactory:
 
     def restore(self,
                 name: str,
+                is_ephemeral: bool,
+                is_test: bool,
                 code: str,
                 desc: str,
                 props: Dict[str, Any]):
@@ -452,6 +460,8 @@ class TaskAdapterFactory:
         return TaskAdapter(self._executor,
                            ScopedStore(self._store, name),
                            name,
+                           is_ephemeral,
+                           is_test,
                            code,
                            desc,
                            props)

@@ -1,71 +1,22 @@
 import json
 import logging
-import socket
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from threading import Thread
-from typing import Dict, Optional, List, Set, Any
 from time import sleep
-from zeroconf import IPVersion, ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener, ZeroconfServiceTypes
+from config import ServiceRegistry, Service
+from typing import Dict, List, Set, Any
+from zeroconf import Zeroconf, ServiceBrowser, ServiceListener, ZeroconfServiceTypes
 
-from api.store import Store
+from mcp_server import McpServer
 from store_impl import ScopedStore, SimpleStore
+
+
+
 
 logger = logging.getLogger(__name__)
 
 
-
-class MDNS:
-    def __init__(self):
-        self.registered: Dict[str, ServiceInfo] = dict()
-        self.zc = Zeroconf(ip_version=IPVersion.V4Only)
-        self.service_type = "_mcp._tcp.local."
-        self.hostname = socket.gethostname()
-
-        # Determine local IP
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            self.local_ip = s.getsockname()[0]
-        except Exception:
-            self.local_ip = "127.0.0.1"
-        finally:
-            s.close()
-
-    def register_mdns(self, name: str, port: int):
-        """Registers a service via mDNS."""
-        try:
-            service_name = f"{name}.{self.service_type}"
-            service_info = ServiceInfo(
-                type_=self.service_type,
-                name=service_name,
-                addresses=[socket.inet_aton(self.local_ip)],
-                port=port,
-                properties={
-                    "version": "1.0",
-                    "path": "/sse",
-                    "server_type": "fastmcp"
-                },
-                server=f"{self.hostname}.local.",
-            )
-
-            logger.info(f"mDNS: Registering {service_name} at {self.local_ip}:{port}")
-            self.zc.register_service(service_info)
-            self.registered[name] = service_info
-        except Exception as e:
-            logger.error(f"mDNS Registration failed: {e}")
-
-    def unregister_mdns(self, name: str):
-        """Unregisters a specific service without closing the Zeroconf instance."""
-        service_info = self.registered.pop(name, None)
-        if service_info:
-            logger.info(f"mDNS: Unregistering service {name}...")
-            self.zc.unregister_service(service_info)
-
-    def shutdown(self):
-        """Completely shut down mDNS and close the socket."""
-        self.zc.unregister_all_services()
-        self.zc.close()
 
 
 
@@ -87,6 +38,7 @@ class MDNSService:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MDNSService":
         return cls(**data)
+
 
 
 class MDNSRegistry:
@@ -194,3 +146,88 @@ class MDNSRegistry:
             return []
         finally:
             zc.close()
+
+
+
+class OpenDiscoveryServer(McpServer):
+
+    def __init__(self, name: str, port: int, dir: str, configs: Dict[str, Service], host: str = "0.0.0.0"):
+        super().__init__(name, port, host)
+        self.store = SimpleStore(name="state", directory=dir)
+        self.mdns_registry = MDNSRegistry(self.store)
+        self.manual_registry = ServiceRegistry(configs)
+        self.manual_registry.start()
+        self.mdns_registry.start()
+
+
+        @self.mcp.tool()
+        def list_available_services() -> str:
+            """
+            Lists all manually configured services and locally discovered mDNS services.
+            Use this to identify available hardware, endpoints, or network APIs.
+            """
+            try:
+                report = [
+                    "### 📡 Available Services",
+                    "=========================\n"
+                ]
+
+                # --- 1. Manually Configured Services ---
+                report.append("#### 🛠️ Manually Configured Services")
+                manual_services = getattr(self.manual_registry, 'services', [])
+
+                if not manual_services:
+                    report.append("*No manually configured services found.*\n")
+                else:
+                    for svc in manual_services:
+                        name = getattr(svc, 'name', 'Unknown')
+                        svc_type = getattr(svc, 'type', 'Unknown').upper()
+                        url = getattr(svc, 'url', 'Unknown URL')
+                        report.append(f"• **{name}** [{svc_type}]: `{url}`")
+                    report.append("\n") # Spacer
+
+                # --- 2. mDNS Discovered Services ---
+                report.append("#### 🔍 Discovered Local Services (mDNS)")
+                mdns_services = getattr(self.mdns_registry, 'services', {})
+
+                if not mdns_services:
+                    report.append("*No mDNS services currently discovered on the local network.*")
+                else:
+                    # Normalize iteration if it's a dictionary
+                    iterator = mdns_services.values() if isinstance(mdns_services, dict) else mdns_services
+
+                    for svc in iterator:
+                        name = svc.name
+                        port = svc.port
+                        server = svc.host
+
+                        # Extract and format the last_seen timestamp
+                        last_seen = svc.last_seen
+                        time_str = last_seen.strftime("%Y-%m-%d %H:%M:%S")
+
+                        # Extract and safely decode byte-encoded properties common in Zeroconf
+                        props = getattr(svc, 'properties', {})
+                        props_str = ""
+                        if props:
+                            safe_props = {}
+                            for k, v in props.items():
+                                safe_k = k.decode('utf-8') if isinstance(k, bytes) else str(k)
+                                safe_v = v.decode('utf-8') if isinstance(v, bytes) else str(v)
+                                safe_props[safe_k] = safe_v
+                            props_str = f"\n  - *Properties:* `{safe_props}`"
+
+                        # Append the formatted service entry
+                        report.append(f"• **{name}** (`{server}:{port}`) | *last seen: {time_str}*{props_str}")
+
+                return "\n".join(report)
+
+            except Exception as e:
+                logger.error(f"Failed to list available services: {e}", exc_info=True)
+                return f"Error: Could not retrieve services: {type(e).__name__} - {str(e)}"
+
+
+    def stop(self):
+        self.manual_registry.stop()
+        self.mdns_registry.stop()
+        super().stop()
+

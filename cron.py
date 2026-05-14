@@ -32,12 +32,11 @@ class CronService:
     def __loop(self):
         while self._is_running:
             now = datetime.now()
-            run_key = (now.year, now.month, now.day, now.hour, now.minute)
 
             for task in list(self._task_repository.tasks.values()):
                 try:
-                    if self._should_run(task, now, run_key):
-                        task.safe_run("cron")
+                    if self._should_run(task, now):
+                        task.safe_run("cron", list())
                 except Exception:
                     logger.exception(f"Error triggering task: {task.name}")
 
@@ -46,7 +45,7 @@ class CronService:
             sleep(sleep_time)
 
 
-    def _should_run(self, task: TaskAdapter, now: datetime, run_key: tuple[int, int, int, int, int]) -> bool:
+    def _should_run(self, task: TaskAdapter, now: datetime) -> bool:
         if task.cron_expression is None:
             return False
         # If task failed recently, wait 1 minute before retrying
@@ -55,40 +54,62 @@ class CronService:
             if time_since_error < timedelta(minutes=1):
                 return False
 
-        # Check if already run in this minute or if cron expression matches
+        # Build dedup key matching the cron's resolution (per-second for 6-field, per-minute for 5-field).
+        has_seconds = len(task.cron_expression.split()) == 6
+        if has_seconds:
+            run_key = (now.year, now.month, now.day, now.hour, now.minute, now.second)
+        else:
+            run_key = (now.year, now.month, now.day, now.hour, now.minute)
+
+        # Skip if we already triggered the task within the same dedup window
         last_run = task.last_attempt_at()
         if last_run is not None:
-            if (last_run.year, last_run.month, last_run.day, last_run.hour, last_run.minute) == run_key:
+            if has_seconds:
+                last_key = (last_run.year, last_run.month, last_run.day, last_run.hour, last_run.minute, last_run.second)
+            else:
+                last_key = (last_run.year, last_run.month, last_run.day, last_run.hour, last_run.minute)
+            if last_key == run_key:
                 return False
         return self._matches(task.cron_expression, now)
 
     @staticmethod
     def validate_cron_expression(expression: str) -> None:
         fields = expression.split()
-        if len(fields) != 5:
-            raise ValueError(f"Invalid cron expression '{expression}'. Expected 5 fields.")
+        if len(fields) not in (5, 6):
+            raise ValueError(f"Invalid cron expression '{expression}'. Expected 5 or 6 fields.")
 
-        ranges = [
-            (0, 59),
-            (0, 23),
-            (1, 31),
-            (1, 12),
-            (0, 7),
+        ranges_5 = [
+            (0, 59),  # minute
+            (0, 23),  # hour
+            (1, 31),  # day
+            (1, 12),  # month
+            (0, 7),   # weekday
         ]
+        ranges_6 = [(0, 59)] + ranges_5  # prepend seconds
+
+        ranges = ranges_6 if len(fields) == 6 else ranges_5
         for field, (minimum, maximum) in zip(fields, ranges, strict=True):
             CronService._parse_field(field, minimum, maximum)
 
     def _matches(self, expression: Optional[str], now: datetime) -> bool:
-        """Splits the cron expression and evaluates each field."""
+        """Splits the cron expression and evaluates each field. Supports 5-field (m h d M w) and 6-field (s m h d M w)."""
         if not expression:
             return False
         try:
-            minute, hour, day, month, weekday = expression.split()
-            cron_weekday = (now.weekday() + 1) % 7 # ISO (Mon=0) to Cron (Sun=0/7)
+            fields = expression.split()
+            if len(fields) == 6:
+                second, minute, hour, day, month, weekday = fields
+            elif len(fields) == 5:
+                second = "0"  # match only at second 0 for minute-resolution crons
+                minute, hour, day, month, weekday = fields
+            else:
+                raise ValueError(f"Expected 5 or 6 fields, got {len(fields)}")
 
-            # Pass unique cache keys for each field type
+            cron_weekday = (now.weekday() + 1) % 7  # ISO (Mon=0) to Cron (Sun=0/7)
+
             return (
-                    self._matches_field(minute, now.minute, 0, 59, "m")
+                    self._matches_field(second, now.second, 0, 59, "s")
+                    and self._matches_field(minute, now.minute, 0, 59, "m")
                     and self._matches_field(hour, now.hour, 0, 23, "h")
                     and self._matches_field(day, now.day, 1, 31, "d")
                     and self._matches_field(month, now.month, 1, 12, "M")
