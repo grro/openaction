@@ -21,7 +21,7 @@ class AdhocTask(ABC):
 
 
     @abstractmethod
-    def on_execute(self, params: List[str]) -> str:
+    def on_execute_with_params(self, params: List[str]) -> str:
         """
         Executes the ad hoc task with the provided parameters.
 
@@ -58,6 +58,12 @@ class BackgroundTask(ABC):
         - Roller shutter rules based on the time of day.
         - Lighting rules based on time and outside brightness.
         - Energy management rules that control heating rods depending on excess power grid capacity.
+
+    Lifecycle Management:
+        Use the lifecycle methods to manage internally used session-related instances,
+        such as network clients (e.g., httpx.Client). Initializing clients in
+        `on_activate` and closing them in `on_deactivate` avoids creating new network
+        sessions for each execution call, significantly improving performance and stability.
     """
 
     def __init__(self, store: 'Store') -> None: # type: ignore

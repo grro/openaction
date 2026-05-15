@@ -51,7 +51,6 @@ class TaskResult:
 
 
 
-
 def when(target: str):
     """
     Decorator to attach trigger conditions to a task's execute method.
@@ -338,7 +337,7 @@ class TaskAdapter:
                 if isinstance(self._task_instance, BackgroundTask):
                     result = self._task_instance.on_execute()
                 else:
-                    result = self._task_instance.on_execute(params)
+                    result = self._task_instance.on_execute_with_params(params)
 
         except Exception as e:
             # Attach any captured output to the exception for debugging
