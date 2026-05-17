@@ -29,5 +29,3 @@ The workflow is as follows:
 4.  **The Execution:** When triggered, the script runs in a local sandbox, calling the endpoints of connected **Sensors & Actuators**.
 
 ---
-
-<img src="overview.png" alt="overview.png" width="70%">

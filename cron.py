@@ -1,68 +1,36 @@
 import logging
 from datetime import datetime, timedelta
-from threading import Thread
-from time import sleep
 from typing import Dict, Optional
-
-from task_adapter import TaskAdapter
-from task_repository import TaskAdapterRepository
 
 
 logger = logging.getLogger(__name__)
 
 
-class CronService:
+class CronExpression:
 
-    def __init__(self, task_repository : TaskAdapterRepository):
-        self._is_running = False
-        self._task_repository = task_repository
+    def __init__(self, expression: str):
+        self.expression = expression
         self._cron_cache: Dict[str, set[int]] = {}
 
-    def __str__(self):
-        return f"CronService(jobs={len(self._task_repository.tasks)})\n\r" + "\n\r".join([" * " + str(task) for task in self._task_repository.tasks])
-
-    def stop(self):
-        self._is_running = False
-        return self
-
-    def start(self):
-        self._is_running = True
-        Thread(target=self.__loop, daemon=True).start()
-
-    def __loop(self):
-        while self._is_running:
-            now = datetime.now()
-
-            for task in list(self._task_repository.tasks.values()):
-                try:
-                    if self._should_run(task, now):
-                        task.safe_run("cron", list())
-                except Exception:
-                    logger.exception(f"Error triggering task: {task.name}")
-
-            next_tick = (datetime.now() + timedelta(seconds=1)).replace(microsecond=0)
-            sleep_time = (next_tick - datetime.now()).total_seconds()
-            sleep(sleep_time)
-
-
-    def _should_run(self, task: TaskAdapter, now: datetime) -> bool:
-        if task.cron_expression is None:
+    def should_run(self, last_attempt_at: Optional[datetime], last_failure_age: Optional[timedelta]) -> bool:
+        if self.expression is None:
             return False
         # If task failed recently, wait 1 minute before retrying
-        time_since_error = task.last_failure_age()
+        time_since_error = last_failure_age
         if time_since_error is not None:
             if time_since_error < timedelta(minutes=1):
                 return False
 
         # Build dedup key matching the cron's resolution (per-second for 6-field, per-minute for 5-field).
-        has_seconds = len(task.cron_expression.split()) == 6
+        has_seconds = len(self.expression.split()) == 6
+        now = datetime.now()
         if has_seconds:
             run_key = (now.year, now.month, now.day, now.hour, now.minute, now.second)
         else:
             run_key = (now.year, now.month, now.day, now.hour, now.minute)
 
         # Skip if we already triggered the task within the same dedup window
-        last_run = task.last_attempt_at()
+        last_run = last_attempt_at
         if last_run is not None:
             if has_seconds:
                 last_key = (last_run.year, last_run.month, last_run.day, last_run.hour, last_run.minute, last_run.second)
@@ -70,10 +38,9 @@ class CronService:
                 last_key = (last_run.year, last_run.month, last_run.day, last_run.hour, last_run.minute)
             if last_key == run_key:
                 return False
-        return self._matches(task.cron_expression, now)
+        return self._matches(self.expression, now)
 
-    @staticmethod
-    def validate_cron_expression(expression: str) -> None:
+    def validate(self, expression: str) -> None:
         fields = expression.split()
         if len(fields) not in (5, 6):
             raise ValueError(f"Invalid cron expression '{expression}'. Expected 5 or 6 fields.")
@@ -89,7 +56,7 @@ class CronService:
 
         ranges = ranges_6 if len(fields) == 6 else ranges_5
         for field, (minimum, maximum) in zip(fields, ranges, strict=True):
-            CronService._parse_field(field, minimum, maximum)
+            self._parse_field(field, minimum, maximum)
 
     def _matches(self, expression: Optional[str], now: datetime) -> bool:
         """Splits the cron expression and evaluates each field. Supports 5-field (m h d M w) and 6-field (s m h d M w)."""
@@ -135,8 +102,7 @@ class CronService:
             return True
         return value in allowed_values
 
-    @staticmethod
-    def _parse_field(field: str, minimum: int, maximum: int) -> set[int]:
+    def _parse_field(self, field: str, minimum: int, maximum: int) -> set[int]:
         values: set[int] = set()
 
         for part in field.split(","):

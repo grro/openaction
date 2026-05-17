@@ -6,26 +6,25 @@ from typing import Optional
 
 from code_repository import CodeRepository
 from store_impl import SimpleStore
-from task_adapter import TaskAdapter, TaskAdapterFactory
+from managed_task import ManagedTask, ManagedTaskFactory
 
 logger = logging.getLogger(__name__)
 
 
 
 
-class TaskAdapterRepository:
-    """Repository that periodically scaerver disconnected. For troubleshooting guidance,ns and loads tasks from a CodeRepository."""
+class ManagedTaskRepository:
 
-    def __init__(self, code_dir: str, task_factory: TaskAdapterFactory, store: SimpleStore):
+    def __init__(self, code_dir: str, task_factory: ManagedTaskFactory, store: SimpleStore):
         self.__is_running = False
         self._code_registry = CodeRepository(codedir=code_dir)
         self._task_factory = task_factory
         self._store = store
-        self.tasks: dict[str, TaskAdapter] = {}
+        self.tasks: dict[str, ManagedTask] = {}
         self._executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
         logger.info("TaskRepository initialized (Taskexecutor started)")
 
-    def register(self, name: str, code: str, description: str) -> None:
+    def register(self, name: str, code: str, description: str, run_on_start: bool, cron: str) -> None:
 
         if name.startswith("test_"):
             raise ValueError("Task name cannot contain dots ('.')")
@@ -34,14 +33,14 @@ class TaskAdapterRepository:
             if char in name:
                 raise ValueError("Task name cannot contain '" + char + "'")
 
-        task = self._task_factory.create(name, False, False, code, description, None)
+        task = self._task_factory.create(name, False, False, code, run_on_start, cron, description, None)
 
         image = self._code_registry.create_image(name)
         image.write_data(task.code, description, task.props)
 
         self._add_task(name, task, reason="newly registered")
 
-    def _add_task(self, name: str, task: TaskAdapter, reason: str):
+    def _add_task(self, name: str, task: ManagedTask, reason: str):
         if task is None:
             logger.warning(f"Failed to add task '{name}'. Ni after registration.")
         else:
@@ -50,23 +49,22 @@ class TaskAdapterRepository:
 
             if is_new or is_updated:
                 self.tasks[name] = task
-
-                task.activate()
                 if task.run_on_start:
                     if is_new:
                         logger.info(f"Task '{name}' added to registry with load on start (Reason: {reason})")
                     else:
                         logger.info(f"Task '{name}' re-added to registry with load on start (Reason: {reason})")
-                    task.safe_run("run_on_start", list())
                 else:
                     if is_new:
                         logger.info(f"Task '{name}' added to registry (Reason: {reason})")
                     else:
                         logger.info(f"Task '{name}' re-added to registry (Reason: {reason})")
+                task.activate()
 
     def deregister(self, name: str, reason: str) -> None:
         task = self.tasks.pop(name, None)
         if task:
+            task.deactivate()
             task.reset()
             logger.info(f"Task '{name}' has been deregistered (Reason: {reason})")
         self._code_registry.delete_image(name)

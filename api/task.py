@@ -26,9 +26,7 @@ class AdhocTask(ABC):
         Executes the ad hoc task with the provided parameters.
 
         In contrast to the `on_execute` method of a `BackgroundTask`, this method
-        accepts parameters to dictate the specific action to be taken. Additionally,
-        because ad hoc tasks are triggered manually on demand, the `@when` decorator
-        does not make sense here and is not supported.
+        accepts parameters to dictate the specific action to be taken.
 
         Args:
             params (List[str]): A list of string parameters required to execute the task.
@@ -61,7 +59,7 @@ class BackgroundTask(ABC):
 
     Lifecycle Management:
         Use the lifecycle methods to manage internally used session-related instances,
-        such as network clients (e.g., httpx.Client). Initializing clients in
+        such as network clients (e.g., httpx.Client) or to set up push sessions. Initializing clients in
         `on_activate` and closing them in `on_deactivate` avoids creating new network
         sessions for each execution call, significantly improving performance and stability.
     """
@@ -110,14 +108,11 @@ class BackgroundTask(ABC):
         """
         Main execution logic: Called on a schedule (cron) or event-driven trigger.
 
-        This method contains the core procedural logic. To trigger its execution,
-        it must be decorated with one or more `@when` statements.
-
-        Supported triggers:
-            * `@when("Rule loaded")`: Triggers the execution when the rule has been (re)loaded.
-            * `@when("Time cron <cron expression>")`: Triggers the execution based on a
-              cron expression with 5 fields  <m h d M w> or 6 fields format <s m h d M w>
-              (e.g., `@when("Time cron */5 * * * * *")`).
+        This method contains the core procedural logic. This method should also be
+        called if push notifications/webhooks are used to detect changes in the
+        environment. E.g., an MCP-based device may send a notification that a
+        resource has been changed. In this case, the on_execute method should be
+        called to react to the change.
 
         Returns:
             str: A summary of the execution outcome (e.g., "Lights turned off").

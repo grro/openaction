@@ -1,13 +1,17 @@
-import concurrent
 import logging
 import io
+import textwrap
+from threading import Thread, Event
 from contextlib import redirect_stdout, redirect_stderr
 from concurrent.futures.thread import ThreadPoolExecutor
+from dataclasses import field, InitVar, dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+
 from api.store import Store
 from api.task import BackgroundTask, AdhocTask
+from cron import CronExpression
 from store_impl import SimpleStore, ScopedStore
 
 
@@ -15,64 +19,49 @@ logger = logging.getLogger(__name__)
 
 
 
-
+@dataclass
 class TaskResult:
+    # InitVar means 'task' is passed to __init__ but not stored as a class attribute
+    task: InitVar['ManagedTask']
+    trigger: str
+    elapsed: timedelta
 
-    def __init__(self, task: TaskAdapter, trigger: str, elapsed: timedelta, output: str = None, error: str = None):
-        self.date = datetime.now()
-        self.taskname = task.name
-        self.trigger = trigger
-        self.elapsed = elapsed
-        self.output = output
-        self.error = error
+    # Modern Python (3.10+) type hinting for optional variables
+    result: str | None = None
+    output: str | None = None
+    error: str | None = None
+
+    # These fields are populated automatically after initialization
+    name: str = field(init=False)
+    date: datetime = field(default_factory=lambda: datetime.now(), init=False)
+
+    def __post_init__(self, task: 'ManagedTask') -> None:
+        self.name = task.name
 
     def __str__(self) -> str:
         status = "❌ FAILED" if self.error else "✅ SUCCESS"
         elapsed_sec = f"{self.elapsed.total_seconds():.3f}s"
 
         # Primary header line
-        lines = [f"{self.taskname} executed [{status}] | Trigger: '{self.trigger}' | Elapsed: {elapsed_sec}"]
+        parts = [f"{self.name} executed [{status}] | Trigger: '{self.trigger}' | Elapsed: {elapsed_sec}"]
 
-        # Handle optional error (multiline safe)
+        # Helper function to format blocks
+        def format_block(title: str, content: str | None) -> None:
+            if content is not None:
+                parts.append(f"--- {title} ---")
+                parts.append(textwrap.indent(str(content).strip(), "  | "))
+
         if self.error:
-            lines.append("--- Error ---")
-            lines.extend(f"  | {line}" for line in str(self.error).strip().splitlines())
+            format_block("Error", self.error)
+        else:
+            format_block("Success", self.result)
 
-        # Handle optional multiline output
-        if self.output:
-            lines.append("--- Output ---")
-            lines.extend(f"  | {line}" for line in str(self.output).strip().splitlines())
+        format_block("Output", self.output)
 
-        return "\n".join(lines)
+        return "\n".join(parts)
 
 
-    def __repr__(self):
-        return self.__str__()
-
-
-
-def when(target: str):
-    """
-    Decorator to attach trigger conditions to a task's execute method.
-    Examples:
-        @when("Time cron 55 55 5 * * ?")
-        @when("Rule loaded")
-    """
-    def decorated_method(function):
-        # Initialize the list if it doesn't exist yet
-        if not hasattr(function, '__triggers__'):
-            function.__triggers__ = []
-        function.__triggers__.append(target)
-        return function
-    return decorated_method
-
-
-
-class TaskAdapter:
-
-    RUNNING = "running"
-    IDLING = "idling"
-
+class ManagedTask:
 
     def __init__(self,
                  executor: ThreadPoolExecutor,
@@ -94,60 +83,13 @@ class TaskAdapter:
         self.last_executions: List[TaskResult] = list()
         self.default_timeout_sec = 30
         self.is_activated = False
-        self.state = self.IDLING
-        self.run_on_start = False
-        self.cron_expression = None
-        self.subscripted_to = set()
+        self.cron_expression: CronExpression = CronExpression(self.cron)
+        self._wakeup = Event()
         self._task_instance = self.instantiate()
-        self._parse_triggers()
-
-
-
-    def __del__(self):
-        try:
-            if self.is_activated:
-                self.deactivate()
-        except Exception:
-            pass
-
-    def _parse_triggers(self):
-        """Extracts and parses the @when decorators from the instantiated task."""
-
-        if not hasattr(self._task_instance, "on_execute"):
-            return
-
-        # Retrieve the metadata attached by the @when decorator
-        method = self._task_instance.on_execute
-        triggers = getattr(method, '__triggers__', [])
-
-        # Enforce the mandatory trigger rule
-        if self.is_background_task and not triggers:
-            raise ValueError(
-                f"Validation Error in task '{self.name}': The 'on_execute' method "
-                f"must be decorated with at least one '@when' trigger."
-            )
-
-        for trigger in triggers:
-            trigger = trigger.strip()
-
-            if trigger.lower() == "rule loaded":
-                self.run_on_start = True
-
-            elif trigger.lower().startswith("time cron "):
-                cron_expression = trigger[10:].strip()
-                fields = cron_expression.split()
-                if len(fields) not in (5, 6):
-                    raise ValueError(f"Invalid cron expression '{cron_expression}'. Expected 5 or 6 fields.")
-                self.cron_expression = cron_expression
-
-            elif trigger.lower().startswith("item "):
-                # Extract the item name. e.g., "Item gMotion_Sensors changed" -> "gMotion_Sensors"
-                parts = trigger.split(" ")
-                if len(parts) >= 2:
-                    self.subscripted_to.add(parts[1])
 
 
     def instantiate(self):
+        self_outer = self
         try:
             # Inject required dependencies directly into the script's namespace
             self._namespace = {
@@ -155,7 +97,6 @@ class TaskAdapter:
                 "Store": Store,
                 "BackgroundTask": BackgroundTask,
                 "AdhocTask": AdhocTask,
-                "when": when
             }
 
             # Compile and execute the user's script
@@ -163,12 +104,14 @@ class TaskAdapter:
             exec(compiled_code, self._namespace)
 
             user_class = None
+            is_background = False
             for obj in self._namespace.values():
 
                 # Check if it's a background task
                 if isinstance(obj, type) and issubclass(obj, BackgroundTask) and obj is not BackgroundTask:
                     if user_class is None:
                         user_class = obj
+                        is_background = True
                     else:
                         raise ValueError(
                             f"Multiple classes implementing the 'Task' interface found in "
@@ -188,7 +131,37 @@ class TaskAdapter:
             if not user_class:
                 raise ValueError(f"No class implementing the 'Task' interface found in the script for '{self.name}'.")
 
-            return user_class(self._scoped_store)
+            # Dynamically subclass the detected user class to wrap on_execute / on_execute_with_params
+            # with print statements before/after, while still calling the original implementation
+            # (looked up on user_class to bypass our own override).
+            base_class = user_class
+
+            if is_background:
+                class _WrappedTask(user_class):  # type: ignore[misc, valid-type]
+                    def on_execute(self_inner, *args, **kwargs):
+                        return self_outer._execute_sync("app", lambda: base_class.on_execute(self_inner, *args, **kwargs))
+                    def on_execute_fw(self_inner, trigger: str, params: List[str], *args, **kwargs):
+                        return self_outer._execute_sync(trigger, lambda: base_class.on_execute(self_inner, *args, **kwargs))
+            else:
+                class _WrappedTask(user_class):  # type: ignore[misc, valid-type]
+                    def on_activate(self) -> None:
+                        pass
+                    def on_deactivate(self) -> None:
+                        pass
+                    def on_execute_with_params(self_inner, params: List[str], *args, **kwargs):
+                        return self_outer._execute_sync("app", lambda: base_class.on_execute_with_params(self_inner, params, *args, **kwargs))
+                    def on_execute_fw(self_inner, trigger: str, params: List[str], *args, **kwargs):
+                        return self_outer._execute_sync(trigger, lambda: base_class.on_execute_with_params(self_inner, params, *args, **kwargs))
+
+            # Preserve the @when decorator metadata from the original method on the wrapper
+            original_method = getattr(user_class, "on_execute", None)
+            if original_method is not None and hasattr(original_method, "__triggers__"):
+                _WrappedTask.on_execute.__triggers__ = original_method.__triggers__
+
+            _WrappedTask.__name__ = f"Wrapped{user_class.__name__}"
+            _WrappedTask.__qualname__ = _WrappedTask.__name__
+
+            return _WrappedTask(self._scoped_store)
 
         except SyntaxError as e:
             # 1. Format the code with line numbers and point to the error line
@@ -220,10 +193,68 @@ class TaskAdapter:
             logger.error(f"Unexpected error instantiating task '{self.name}': {e}", exc_info=True)
             raise
 
-    def _add_task_result(self, task_result: TaskResult):
-        self.last_executions.append(task_result)
-        if len(self.last_executions) > 10:
-            del self.last_executions[0]
+
+    def activate(self):
+        if not self.is_activated:
+            self.is_activated = True
+            self._wakeup.clear()
+            Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        try:
+            self._task_instance.on_activate()
+        except Exception as e:
+            logger.error(f"Error activating task '{self.name}': {e}", exc_info=True)
+
+        if self.run_on_start:
+            try:
+                self._task_instance.on_execute_fw("run_one_start", list())
+            except Exception as e:
+                logger.warning(f"Error in initial execution for task '{self.name}': {e}", exc_info=True)
+
+
+        while self.is_activated:
+            try:
+                if self.cron_expression.should_run(self.last_attempt_at, self.last_failure_age):
+                    self._task_instance.on_execute_fw("cron", list())
+            except Exception as e:
+               logger.warning(f"Error in cron loop for task '{self.name}': {e}", exc_info=True)
+            self._wakeup.wait(timeout=3)
+
+        try:
+            self._task_instance.on_deactivate()
+        except Exception as e:
+            logger.error(f"Error deactivating task '{self.name}': {e}", exc_info=True)
+
+    def deactivate(self):
+        self.is_activated = False
+        self._wakeup.set()
+
+    def __del__(self):
+        self.deactivate()
+
+    def execute_manually(self, trigger: str, params: List[str]):
+        self._task_instance.on_execute_fw(trigger, params)
+
+    def _execute_sync(self, trigger: str, call):
+        start = datetime.now()
+        output_buffer = io.StringIO()
+        try:
+            # Capture both standard output (print) and standard error (warnings/logs)
+            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                result = call()
+                elapsed = datetime.now() - start
+                task_result = TaskResult(self, trigger, elapsed, result=result, output=output_buffer.getvalue())
+                return result
+        except Exception as e:
+            elapsed = datetime.now() - start
+            task_result = TaskResult(self, trigger, elapsed, error=str(e), output=output_buffer.getvalue())
+            raise e
+        finally:
+            self.last_executions.append(task_result)
+            if len(self.last_executions) > 10:
+                del self.last_executions[0]
+            logger.info(task_result)
 
     def data(self) -> Dict[str, str]:
         """Returns the current persistent state stored for this specific task."""
@@ -237,6 +268,14 @@ class TaskAdapter:
     @property
     def is_background_task(self) -> bool:
         return isinstance(self._task_instance, BackgroundTask)
+
+    @property
+    def run_on_start(self) -> bool:
+        return self.props.get("run_on_start", False)
+
+    @property
+    def cron(self) -> str:
+        return self.props.get("cron", "")
 
     @property
     def created_at(self) -> datetime:
@@ -253,123 +292,20 @@ class TaskAdapter:
         """Checks if the task's TTL has expired based on the 'valid_to' property."""
         return datetime.now() > self.valid_to
 
+    @property
     def last_attempt_at(self) -> Optional[datetime]:
         """Returns the timestamp of the most recent execution attempt."""
         if not self.last_executions:
             return None
         return self.last_executions[-1].date
 
+    @property
     def last_failure_age(self) -> Optional[timedelta]:
         """Returns the duration since the last failed execution."""
         if not self.last_executions or self.last_executions[-1].error is None:
             return None
         return datetime.now() - self.last_executions[-1].date
 
-    def safe_run(self, trigger: str, params: List[str]):
-        """Executes the task and ensures any unhandled exceptions are logged."""
-        try:
-            return self.run(trigger, params)
-        except Exception as e:
-            msg = f"Execution failed for task '{self.name}': {e}"
-            logger.error(msg)
-            task_result = TaskResult(self, trigger, timedelta(0), error=msg)
-            self._add_task_result(task_result)
-            return task_result
-
-    def run(self, trigger: str, params: List[str]) -> TaskResult:
-        """
-        Executes the task logic within a dedicated thread.
-        Handles locking, timeouts, and result logging.
-        """
-
-        start = datetime.now()
-        task_result = TaskResult(self, trigger, start-start, error="Unknown error")  # Default in case of unexpected failure before assignment
-
-        # Acquire lock without blocking to prevent overlapping executions of the same task
-        if self.state == self.RUNNING:
-            msg = f"Task '{self.name}' is already running. Skipping this execution cycle."
-            logger.debug(msg)
-            task_result = TaskResult(self, trigger, timedelta(0), error=msg)
-            self._add_task_result(task_result)
-            return task_result
-
-        # Retrieve custom timeout from properties or use the system default
-        timeout_sec = self.props.get("timeout", self.default_timeout_sec)
-        try:
-            self.state = self.RUNNING
-            future = self._executor.submit(self._execute_task, params)
-            printed_output = future.result(timeout=timeout_sec)
-            elapsed = datetime.now() - start
-            task_result = TaskResult(self, trigger, elapsed, output=printed_output)
-            logger.info(task_result)
-        except concurrent.futures.TimeoutError as te:
-            error_msg = f"Execution failed (TimeoutError; timeout {timeout_sec} seconds) for task '{self.name}': {str(te)}"
-            logger.warning(error_msg)
-            elapsed = datetime.now() - start
-            task_result = TaskResult(self, trigger, elapsed, error=error_msg)
-
-        except Exception as e:
-            elapsed = datetime.now() - start
-            partial_output = getattr(e, 'output', None)
-            error_msg = f"Execution failed for task '{self.name}': {type(e).__name__}: {str(e)}"
-            if partial_output:
-                logger.warning(f"{error_msg}\nPartial Output:\n{partial_output}")
-            else:
-                logger.warning(error_msg)
-            task_result = TaskResult(self, trigger, elapsed, output=partial_output, error=error_msg)
-
-        finally:
-            self.state = self.IDLING
-            self._add_task_result(task_result)
-
-        return task_result
-
-    def _execute_task(self, params: List[str]) -> str:
-        """
-        Executes the task instance's logic while capturing all console output.
-        Returns a combined string of the logical return value and captured logs.
-        """
-        output_buffer = io.StringIO()
-        try:
-            # Capture both standard output (print) and standard error (warnings/logs)
-            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
-                # Execute the user-defined logic
-                if isinstance(self._task_instance, BackgroundTask):
-                    result = self._task_instance.on_execute()
-                else:
-                    result = self._task_instance.on_execute_with_params(params)
-
-        except Exception as e:
-            # Attach any captured output to the exception for debugging
-            e.output = output_buffer.getvalue()
-            raise e
-
-        # Retrieve captured console logs
-        captured_logs = output_buffer.getvalue()
-
-        # Format the result:
-        # If the user returned a value, convert it to string and append logs.
-        # If the user returned None, just return the logs.
-        if result is not None:
-            return f"{result}\n--- Console Output ---\n{captured_logs}"
-
-        return captured_logs
-
-    def activate(self):
-        self.is_activated = True
-        try:
-            if self.is_background_task:
-                self._task_instance.on_activate()
-        except Exception as e:
-            logger.error(f"Error activating task '{self.name}': {e}", exc_info=True)
-
-    def deactivate(self):
-        self.is_activated = False
-        try:
-            if self.is_background_task:
-                self._task_instance.on_deactivate()
-        except Exception as e:
-            logger.error(f"Error deactivating task '{self.name}': {e}", exc_info=True)
 
     def __str__(self) -> str:
 
@@ -420,7 +356,7 @@ class TaskAdapter:
         return "\n".join(lines)
 
 
-class TaskAdapterFactory:
+class ManagedTaskFactory:
 
     def __init__(self, store: SimpleStore, executor: ThreadPoolExecutor):
         self._store = store
@@ -431,14 +367,18 @@ class TaskAdapterFactory:
                is_ephemeral: bool,
                is_test: bool,
                code: str,
+               run_on_start: bool,
+               cron: str,
                description: str,
                ttl: Optional[int] = None):
 
         props: Dict [str, Any] = {  'created_at': datetime.now().isoformat(),
                                     'description': description,
+                                    'run_on_start': run_on_start,
+                                    'con': cron,
                                     'ttl': -1 if ttl is None else ttl}
 
-        return TaskAdapter(self._executor,
+        return ManagedTask(self._executor,
                            ScopedStore(self._store, name),
                            name,
                            is_ephemeral,
@@ -456,7 +396,7 @@ class TaskAdapterFactory:
                 desc: str,
                 props: Dict[str, Any]):
 
-        return TaskAdapter(self._executor,
+        return ManagedTask(self._executor,
                            ScopedStore(self._store, name),
                            name,
                            is_ephemeral,

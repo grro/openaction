@@ -6,11 +6,10 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import  List
 
-from cron import CronService
 from mcp_server import McpServer
 from store_impl import SimpleStore
-from task_adapter import TaskAdapter, TaskAdapterFactory
-from task_repository import TaskAdapterRepository
+from managed_task import ManagedTask, ManagedTaskFactory
+from task_repository import ManagedTaskRepository
 
 
 
@@ -22,9 +21,9 @@ class ExecutionHistory:
 
     def __init__(self, limit: int):
         self.limit = limit
-        self._last_tasks: List[TaskAdapter] = []
+        self._last_tasks: List[ManagedTask] = []
 
-    def add(self, task: TaskAdapter):
+    def add(self, task: ManagedTask):
         # 1. Check if a task with this name already exists in the history buffer
         existing_task = next((t for t in self._last_tasks if t.name == task.name), None)
 
@@ -49,7 +48,7 @@ class ExecutionHistory:
         self._last_tasks = [task for task in self._last_tasks if task.name != name]
 
     @property
-    def last_tasks(self) -> List[TaskAdapter]:
+    def last_tasks(self) -> List[ManagedTask]:
         self._last_tasks = [task for task in self._last_tasks if not task.is_expired()]
         return list(self._last_tasks)
 
@@ -63,10 +62,8 @@ class OpenActionServer(McpServer):
         self.store = SimpleStore(name="state", directory=dir)
         self.execution_history = ExecutionHistory(15)
         self.executors = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
-        self.task_factory = TaskAdapterFactory(self.store, self.executors)
-        self.task_repository = TaskAdapterRepository(os.path.join(dir, "tasks"), self.task_factory, self.store)
-        self.cron = CronService(self.task_repository)
-        self.cron.start()
+        self.task_factory = ManagedTaskFactory(self.store, self.executors)
+        self.task_repository = ManagedTaskRepository(os.path.join(dir, "tasks"), self.task_factory, self.store)
         self.task_repository.start()
 
 
@@ -172,9 +169,7 @@ class OpenActionServer(McpServer):
 
 
         @self.mcp.tool()
-        def register_task(name: str,
-                          script: str,
-                          description: str) -> str:
+        def register_task(name: str, script: str, description: str, run_on_start: bool, cron: str = "") -> str:
             """
             Registers a new permanent, Python-based automation task in the OpenAction system.
 
@@ -188,6 +183,9 @@ class OpenActionServer(McpServer):
                     *Architecture Constraint:* Consolidate logic. Create ONE script per target
                     device/service (e.g., a single heater) rather than fragmenting into multiple tasks.
                 description (str): A clear explanation of what the task does and its intended triggers.
+                run_on_start (bool): If True, the task will execute immediately when the system boots.
+                cron (str, optional): A standard cron expression (e.g., "*/5 * * * *") defining
+                    the schedule. Omit or pass an empty string if this is purely an event-driven task.
 
             Returns:
                 str: A confirmation message indicating the registration status.
@@ -208,12 +206,12 @@ class OpenActionServer(McpServer):
                - STEP B (Map Environment): Use `list_available_services` and `list_available_modules`
                  to ensure your required endpoints and libraries actually exist in the environment.
                - STEP C (Test First): You MUST execute your code using the `execute_task` tool to
-                 validate syntax, logic, and JSON parsing BEFORE calling `register_task`.
+                 validate syntax, logic, and JSON parsing BEFORE calling `register_task(name)`.
                  Blind registration is strictly prohibited.
             """
 
             try:
-                self.task_repository.register(name, script, description)
+                self.task_repository.register(name, script, description, run_on_start, cron)
                 logger.info(f"Production Task '{name}' registered successfully.")
                 return f"Success: Task '{name}' has been successfully registered as a persistent production task."
 
@@ -264,7 +262,7 @@ class OpenActionServer(McpServer):
                 if permanent_tasks:
                     for task in permanent_tasks:
                         type_label =  "⚙️ BACKGROUND" if task.is_background_task else "🛠️ ADHOC"
-                        output.append(f"• **{task.name}** `[{type_label}]` `[{task.state}]`: {task.description}")
+                        output.append(f"• **{task.name}** `[{type_label}]`: {task.description}")
                 else:
                     output.append("*Currently, no permanent tasks are registered.*")
 
@@ -287,7 +285,7 @@ class OpenActionServer(McpServer):
                         # Check if it's explicitly a test task for additional flagging
                         test_flag = " `[🧪 TEST]`" if task.is_test else ""
 
-                        output.append(f"• **{task.name}**{test_flag} | Executed: `{exec_count}x` | `[{type_label}]` `[{task.state}]`: {task.description}")
+                        output.append(f"• **{task.name}**{test_flag} | Executed: `{exec_count}x` | `[{type_label}]`: {task.description}")
                 else:
                     output.append("*No ephemeral tasks found in the recent execution history.*")
 
@@ -408,7 +406,7 @@ class OpenActionServer(McpServer):
 
                 # Execute the task safely
                 # Using a standardized trigger name for history tracking
-                task.safe_run("manual_trigger_by_name", params)
+                task.execute_manually("manual_trigger_by_name", params)
                 self.execution_history.add(task)
 
                 return f"Success: Task '{name}' was executed successfully."
@@ -443,12 +441,13 @@ class OpenActionServer(McpServer):
             try:
                 # 1. Create a temporary task instance via the factory
                 # We explicitly set is_ephemeral and pass along the test flag and TTL.
-                task = self.task_factory.create(name, True, is_test, code, description, ttl)
+                task = self.task_factory.create(name, True, is_test, code, False, '', description, ttl)
+                task.activate()
                 logger.info(f"Executing ephemeral task '{name}' (is_test={is_test}, ttl={ttl}s)")
 
                 # 2. Run the task (returns a TaskResult object)
                 # Using a standardized trigger name for clear history tracking
-                result = task.run("manual_ephemeral_execution", [])
+                result = task._execute_sync("manual_ephemeral_execution", [])
 
                 # Update the shared execution history buffer
                 # This allows get_task and manual_execution_history to retrieve it later
@@ -472,7 +471,6 @@ class OpenActionServer(McpServer):
 
 
     def stop(self):
-        self.cron.stop()
         self.task_repository.stop()
         self.mdns.unregister_mdns(self.name)
         self.executors.shutdown(wait=False)
