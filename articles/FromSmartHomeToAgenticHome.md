@@ -88,11 +88,11 @@ supply, and LAN/WLAN capabilities (such as smart energy meters, advanced lightin
 blinds), direct MCP support is highly viable.
 
 However, the "MCP-on-device" vision is currently more a future target state than the status quo. With the exception
-of dedicated (maker) projects — such as the author's own presence sensor project or wind sensor project — providing
+of dedicated (maker) projects — such as the author's own [presence sensor](https://github.com/grro/presence) project or [wind sensor](https://github.com/grro/windsensor) project — providing
 MCP capabilities today almost always requires a bridge layer in practice. The same limitation applies to 
 battery-operated sensors that rely on wireless, energy-saving protocols (like Thread or Zigbee). Maintaining an
-active MCP connection would drain the battery too quickly. For these devices, MCP bridges are deployed to translat
-e the agent's semantic MCP commands into the lightweight, low-power protocols required at the edge.
+active MCP connection would drain the battery too quickly. For these devices, MCP bridges are deployed to translate
+the agent's semantic MCP commands into the lightweight, low-power protocols required at the edge.
 
 ## The Challenge of Context Bloat
 While MCP is incredibly powerful, the number of active MCP servers must be managed carefully to avoid overwhelming the
@@ -152,7 +152,7 @@ can quietly cause harm over time.
 
 To ensure deterministic behavior, the agent can be supplemented with a dedicated Action Service that executes
 "If-This-Then-That" rules on its behalf (as well as ad-hoc "Do-That" commands).  An architectural study of the
-Action Service, developed by the author, is available at https://github.com/grro/openaction.
+Action Service, developed by the author, is available at [OpenAction](https://github.com/grro/openaction).
 
 The Action Service is built around rules that are bound to a specific trigger—an exact point in time, a recurring
 cron schedule, an external event such as "motion detected", or a manual trigger—and carry out a well-defined action,
