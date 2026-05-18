@@ -1,3 +1,4 @@
+
 # From Smart Home to Agentic Home
 Traditional smart home systems continue to suffer from fragmented ecosystems and often complex, manual configuration 
 effort. With the next logical evolutionary step - the 'Agentic Home' - autonomous AI agents will take over central 
@@ -168,7 +169,8 @@ own execution block.
 Once a script is generated, its day-to-day execution runs completely independently of the AI agent. However, the 
 agent always retains the ability to adapt, refactor, and refine these background scripts at any time.
 
-![img_3.png](img_3.png) 
+![img_3.png](img_3.png)
+
 
 ## Conclusion
 The transition from a traditional "Smart Home" to an "Agentic Home" represents a fundamental paradigm shift in how we 
