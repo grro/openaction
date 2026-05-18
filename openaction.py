@@ -71,8 +71,12 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def list_available_modules() -> str:
             """
-            Lists the current Python version and all external third-party Python packages installed.
-            Use this to determine environment capabilities and which libraries can be imported inside tasks.
+            List the active Python version and all installed third-party packages.
+
+            Use this before writing or registering a task to confirm which
+            libraries can be imported. Standard-library modules are always
+            available and are not listed here. Note that the listed names
+            are distribution names; the actual `import` name may differ.
             """
             try:
                 python_version = sys.version.split()[0]
@@ -113,7 +117,11 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def list_example_tasks() -> str:
             """
-            Retrieves the source code of all example tasks.
+            Return the source code of all bundled example tasks.
+
+            Useful as a reference for the agent when authoring new tasks:
+            the examples demonstrate the expected class layout, lifecycle
+            hooks, and idiomatic use of the injected `Task` / `Store` API.
             """
             try:
                 examples_dir = (Path(__file__).parent / "examples").resolve()
@@ -144,7 +152,11 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def list_api() -> str:
             """
-            Retrieves the source code of the API base classes.
+            Return the source code of the task API base classes.
+
+            The agent must implement these interfaces (e.g., `Task`) when
+            generating task scripts. Inspect them to learn the available
+            lifecycle methods, helpers, and injected dependencies.
             """
             try:
                 api_dir = (Path(__file__).parent / "api").resolve()
@@ -171,43 +183,46 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def register_task(name: str, script: str, description: str, run_on_start: bool, cron: str = "") -> str:
             """
-            Registers a new permanent, Python-based automation task in the OpenAction system.
+            Register a new permanent Python-based automation task.
 
             Args:
-                name (str): A unique, URI-safe identifier (alphanumeric, hyphens, underscores).
-                    WARNING: Production tasks MUST NOT start with the 'test_' prefix.
-                script (str): The Python source code. MUST define a class inheriting from the
-                    abstract `Task` class (use `list_api` to view the required interface).
-                    *Injection Note:* Do NOT import `Task` or `Store` in your script; they are
-                    automatically injected into the execution namespace.
-                    *Architecture Constraint:* Consolidate logic. Create ONE script per target
-                    device/service (e.g., a single heater) rather than fragmenting into multiple tasks.
-                description (str): A clear explanation of what the task does and its intended triggers.
-                run_on_start (bool): If True, the task will execute immediately when the system boots.
-                cron (str, optional): A standard cron expression (e.g., "*/5 * * * *") defining
-                    the schedule. Omit or pass an empty string if this is purely an event-driven task.
+                name: A unique, URI-safe identifier (alphanumeric, hyphens,
+                    underscores). MUST NOT start with the `test_` prefix —
+                    that namespace is reserved for ephemeral test runs.
+                script: The Python source code. MUST define a class that
+                    inherits from the abstract `BackgroundTask`  orr 'AdhocTask'
+                    base class (call `list_api` to view its interface).
+                    Do NOT import `Task` or `Store` — both are auto-injected
+                    into the execution namespace.
+                    Consolidate logic per target device/service: one script
+                    per heater, blind, etc., rather than many fragmented tasks.
+                description: A clear, human-readable explanation of what
+                    the task does and when it is expected to fire.
+                run_on_start: If True, the task runs once immediately when
+                    the server starts.
+                cron: Optional standard cron expression (e.g. `"*/5 * * * *"`)
+                    defining a recurring schedule. Leave empty for purely
+                    event-driven tasks.
 
             Returns:
-                str: A confirmation message indicating the registration status.
+                A confirmation message indicating registration status.
 
             ==============================
             MANDATORY PROTOCOLS
             ==============================
             1. ERROR HANDLING & RETRIES:
                - The script MUST evaluate external service responses for error states.
-               - If an external call fails, you MUST `raise Exception("...")`. The OpenAction
-                 engine catches this and triggers automatic retry logic (1-minute delay). Do not
-                 swallow errors silently.
-
+               - On failure, the script MUST `raise Exception("...")`. The OpenAction
+                 engine catches the exception and, for cron-triggered tasks, applies
+                 automatic retry logic with a 1-minute delay. Never swallow errors
+                 silently.
             2. PRE-REGISTRATION VALIDATION (Strict Enforcement):
-               - STEP A (Check Existing): Use the `list_tasks` and `get_task` tools to verify if a
-                 task already exists for the target device. If it does, fetch it and MERGE your
-                 new logic into it. Do not create duplicates.
-               - STEP B (Map Environment): Use `list_available_services` and `list_available_modules`
-                 to ensure your required endpoints and libraries actually exist in the environment.
-               - STEP C (Test First): You MUST execute your code using the `execute_task` tool to
-                 validate syntax, logic, and JSON parsing BEFORE calling `register_task(name)`.
-                 Blind registration is strictly prohibited.
+               a. Call `list_tasks` / `get_task` to check for an existing
+                  task targeting the same device and MERGE rather than duplicate.
+               b, Call `list_available_services` and `list_available_modules`
+                  to confirm that required endpoints and libraries exist.
+               c. Validate the script with `execute_ephemeral_task` BEFORE
+                  calling `register_task`. Blind registration is prohibited.
             """
 
             try:
@@ -223,7 +238,14 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def deregister_task(name: str, reason: str) -> str:
             """
-            Deregisters and removes a previously registered task.
+            Permanently remove a registered task.
+
+            Args:
+               name: The identifier of the task to remove.
+               reason: A short justification (logged for auditability).
+
+            Returns:
+               A confirmation or an error message if the task is unknown.
             """
             try:
                 # Check if the task exists in the active registry
@@ -243,12 +265,13 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def list_tasks() -> str:
             """
-            Retrieves a concise list of all currently registered permanent tasks,
-            as well as recently executed ephemeral (test) tasks and their execution frequency.
-            Includes indicators for whether a task is an AdhocTask or a BackgroundTask.
+            List all registered permanent tasks and recently executed ephemeral tasks.
 
-            Note: If an ephemeral test task is executed frequently, it should be registered
-            as a permanent ad hoc task to avoid recreating the script repeatedly.
+            Each entry is annotated with its type (`ADHOC` vs. `BACKGROUND`)
+            and, for ephemeral tasks, the number of times the same script
+            has been executed. Frequently re-executed ephemeral tasks are a
+            strong signal that they should be promoted to permanent ad hoc
+            tasks rather than recreated on every invocation.
             """
             try:
                 output = []
@@ -299,10 +322,15 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def get_task(name: str) -> str:
             """
-            Retrieves detailed metadata, execution history, and source code for a specific task.
+            Return detailed metadata, execution history, and source code for a task.
 
-            This tool automatically identifies if the task is a permanently registered
-            production task or an ephemeral test task from the recent execution history.
+            Looks up `name` first in the permanent registry, then in the
+            ephemeral execution history. Includes:
+             * type (`ADHOC` / `BACKGROUND`) and lifecycle (`PERMANENT` / `EPHEMERAL`)
+             * the most recent execution records (timestamp, trigger, status,
+               duration, and a truncated output or error excerpt)
+             * persistent store contents associated with the task (if any)
+             * the full source code of the task
             """
             try:
                 # 1. Search Strategy: Repository first, then Execution History
@@ -385,17 +413,17 @@ class OpenActionServer(McpServer):
         @self.mcp.tool()
         def execute_task(name: str, params: List[str]) -> str:
             """
-            Manually triggers the immediate execution of a registered ad hoc or background task by name.
+            Trigger immediate execution of a registered task.
 
-            Use this to run production tasks on-demand. Ad hoc tasks will process the
-            provided parameters, while background tasks will run their logic immediately
-            bypassing their usual schedule.
+            Ad hoc tasks consume the supplied `params`; background tasks
+            ignore them and run their scheduled logic immediately,
+            bypassing their normal cron schedule.
 
             Args:
-                name (str): The unique identifier of the registered task to execute.
-                params (List[str]): Parameters to pass to the task (e.g., ["brightness=50"]).
-                    Leave empty [] for background tasks.
-            """
+               name: Identifier of a registered task.
+               params: Parameter strings (e.g. `["brightness=50"]`).
+                       Pass an empty list for background tasks.
+           """
             try:
                 task = self.task_repository.tasks.get(name)
                 if not task:
@@ -404,12 +432,20 @@ class OpenActionServer(McpServer):
 
                 logger.info(f"Manually triggering task '{name}' with parameters: {params}")
 
-                # Execute the task safely
-                # Using a standardized trigger name for history tracking
-                task.execute_manually("manual_trigger_by_name", params)
+                result = task.execute_manually("manual_trigger_by_name", params)
                 self.execution_history.add(task)
 
-                return f"Success: Task '{name}' was executed successfully."
+                header_icon = "⚙️"
+
+                response = [
+                    f"### {header_icon} Task Execution Report: `{name}`",
+                    "---",
+                    str(result)
+                ]
+
+                final_output = "\n".join(response)
+                logger.info(f"Executed task {name}:\n{final_output}")
+                return final_output
 
             except Exception as e:
                 logger.error(f"Critical failure during manual execution of task '{name}': {e}", exc_info=True)
@@ -453,7 +489,6 @@ class OpenActionServer(McpServer):
                 # This allows get_task and manual_execution_history to retrieve it later
                 self.execution_history.add(task)
 
-                # 3. Build the response utilizing the TaskResult's built-in formatting
                 header_icon = "🧪" if is_test else "⚡"
                 response = [
                     f"### {header_icon} Ephemeral Execution Report: `{name}`",

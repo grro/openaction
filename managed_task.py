@@ -233,10 +233,10 @@ class ManagedTask:
     def __del__(self):
         self.deactivate()
 
-    def execute_manually(self, trigger: str, params: List[str]):
-        self._task_instance.on_execute_fw(trigger, params)
+    def execute_manually(self, trigger: str, params: List[str]) -> TaskResult:
+        return self._task_instance.on_execute_fw(trigger, params)
 
-    def _execute_sync(self, trigger: str, call):
+    def _execute_sync(self, trigger: str, call) -> TaskResult:
         start = datetime.now()
         output_buffer = io.StringIO()
         try:
