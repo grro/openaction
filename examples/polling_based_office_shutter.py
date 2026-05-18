@@ -57,8 +57,6 @@ class OfficeShutterSunAutomation(BackgroundTask):
         except (TypeError, ValueError):
             return None
 
-    @when("Rule loaded")
-    @when("Time cron 0 * * * * *")
     def on_execute(self):
         self._ensure_client()
         now = datetime.now(TZ)

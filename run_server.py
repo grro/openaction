@@ -36,3 +36,7 @@ if __name__ == '__main__':
     openaction = OpenActionServer('OpenAction', port+1, work_dir)
     openaction.start_ant_wait()
 
+
+
+# npx @modelcontextprotocol/inspector
+# http://localhost:6274/

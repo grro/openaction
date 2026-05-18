@@ -3,7 +3,7 @@ Nutze opnenDev und openDiscovery
 
 
 Die Steuerung des Bürorollladens erfolgt grundsätzlich automatisiert nach dem Sonnenstand: Er öffnet sich bei
-Sonnenaufgang (jedoch frühestens um 06:00 Uhr und spätestens um 09:00 Uhr) und schließt sich bei Sonnenuntergang
+Sonnenaufgang (jedoch frühestens um 06:00 Uhr und spätestens um 08:00 Uhr) und schließt sich bei Sonnenuntergang
 (frühestens um 16:00 Uhr und spätestens um 22:00 Uhr).
 Wird der Rollladen manuell per Schalter oder App bedient, hat dieser Befehl Priorität. Die Automatik wird in diesem
  Fall temporär ausgesetzt und greift erst wieder beim nächsten regulär geplanten Schaltzeitpunkt ein
