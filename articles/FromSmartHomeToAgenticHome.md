@@ -1,4 +1,6 @@
 
+![img_5.png](img_5.png)
+
 # From Smart Home to Agentic Home
 Traditional smart home systems continue to suffer from fragmented ecosystems and often complex, manual configuration 
 effort. With the next logical evolutionary step - the 'Agentic Home' - autonomous AI agents will take over central 
