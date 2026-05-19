@@ -3,7 +3,7 @@
 
 # From Smart Home to Agentic Home
 Traditional smart home systems continue to suffer from fragmented ecosystems and often complex, manual configuration 
-effort. With the next logical evolutionary step - the 'Agentic Home' - autonomous AI agents will take over central 
+effort. With the next logical evolutionary step — the "Agentic Home" — autonomous AI agents will take over central 
 control and interact naturally with the user. This article outlines a target architecture, from a maker perspective, 
 behind this paradigm shift, demonstrating how modern LLM agents, combined with the Model Context Protocol (MCP), may 
 enable seamless device integration.
@@ -24,7 +24,7 @@ deliberately use these closed systems to tie customers to their specific product
 lock-in.
 
 ## The Role of the Central Hub
-The central smart home hub serves as the “brain” of the operation, communicating with devices across various protocols.
+The central smart home hub serves as the "brain" of the operation, communicating with devices across various protocols.
 It orchestrates the system using predefined "If-This-Then-That" logic alongside ad-hoc "Do-That" user commands, while 
 also maintaining a database of system states and events.
 
@@ -53,23 +53,28 @@ In response, platforms such as Home Assistant have begun adding their own AI fea
 native LLM integrations, and built-in MCP server and client support. The bottleneck has thus shifted from semantic
 integration toward low-level protocol bridging.
 
-Nevertheless, these functions are still based on a hub-and-spoke topology. This article, however, describes an 
-“agent-first” approach in which the AI agent is no longer merely an extension of the hub, but rather the architectural
-center of the system itself—with traditional platforms such as HABPanel (openHAB) currently being used only to 
-provide graphical dashboards.
+Nevertheless, these functions are still based on a hub-and-spoke topology. This article, however, describes an
+"agent-first" approach in which the AI agent is no longer merely an extension of the hub, but rather the architectural 
+center of the system itself. Traditional smart home platforms are reduced to providing features that the agent 
+ecosystem does not yet cover natively — such as HABPanel (OpenHAB) for graphical dashboards.
 
 ## The Next Evolutionary Step: The Agentic Home
-The next evolution in home automation—the Agentic Home—is fundamentally based on autonomous AI agents. Instead of 
+The next evolution in home automation - the Agentic Home - is fundamentally based on autonomous AI agents. Instead of 
 acting merely as a secondary layer or a voice-activated remote control, the AI agent represents the core "brain" of 
 the house. It serves as the central, intelligent point of contact for the entire system. Users communicate with
 these AI agents to obtain environmental information from sensors and to control actuators, typically interacting 
 via natural voice or text dialogue.
 
+Similar to locally operated smart home solutions, it is preferable to run the agent locally as well — for both
+availability and privacy reasons. If the agent runs in a hosted environment, a lost internet connection would render 
+the entire home control almost unusable. Fully on-premises LLMs are therefore preferred over cloud-hosted models
+— keeping sensitive home data, sensor readings, and behavioral patterns entirely within the local network.
+
 Unlike traditional smart home hubs, which rely on simple trigger conditions, AI agents are distinguished by their
-ability to recognize and interpret complex, multifaceted relationships. They don’t just check whether a single
+ability to recognize and interpret complex, multifaceted relationships. They don't just check whether a single
 sensor has been triggered; they take in the bigger picture. This allows the agent to perform complex smart home
 control tasks and, for example, take the time of day into account—checking whether the sun has already risen—to 
-automatically adjust the blinds in the home office as needed, perfectly tailored to the user’s individual work
+automatically adjust the blinds in the home office as needed, perfectly tailored to the user's individual work
 hours and daily routines. Crucially, when user behavioral changes or shifting routines occur, the agent can 
 dynamically adapt the overall smart home controls to align with those updates without requiring manual reconfiguration.
 
@@ -115,10 +120,15 @@ used device like a Shelly Relay and introspect it via standard HTTP requests. Pa
 protocols and popular smart home devices, the necessary connector code can be dynamically generated and executed by
 the agent on the fly, eliminating the wait for community-developed plug-ins.
 
-While syntax errors during the dynamic generation of these connectors are typically caught and self-corrected by 
-the agent, a residual risk remains. The agent might generate code that is syntactically correct but functionally 
-flawed (e.g., turning on the heating instead of turning it off). To mitigate this risk, the agent can perform isolated
-dry runs and test executions of the generated script.
+While syntax errors during the dynamic generation of these connectors are typically caught and
+self-corrected by the agent, a residual risk remains. The agent might generate code that is syntactically
+correct but functionally flawed — for example, turning on the heating instead of turning it off.
+Security mechanisms are therefore a critical aspect of dynamic code generation: since the agent
+autonomously controls actuators, it may execute actions that are potentially dangerous or cost-intensive.
+The execution environment for dynamically generated code should be designed to minimize potential damage —
+for instance through isolated dry runs and test executions before activation, capability-based restrictions
+on which devices a generated script may control, and human-in-the-loop confirmation for safety-critical actuators 
+such as heating or locks.
 
 ## Discovery of Devices
 Compared to dynamically generating access code, identifying new devices on the network is a more difficult challenge.
@@ -179,12 +189,12 @@ The transition from a traditional "Smart Home" to an "Agentic Home" represents a
 interact with our living spaces. We are moving away from rigid, manually programmed hub-and-spoke models — and even 
 beyond simple semantic voice commands — toward an autonomous, reasoning ecosystem.
 
-For the author, the architecture outlined here is already in daily use: Claude Desktop as the MCP host and 
-orchestrating agent, a set of self-built MCP devices and bridges at the edge, HABPanel reduced to a pure dashboard
-role for the connected devices, and the Action Service for deterministic background rules. Conceptually a 
-smart-home-focused variant of execution and workflow engines, the Action Service closes the gap between the
-agent's reasoning and the reliable execution of recurring "If-This-Then-That" automations.
+For the author, the architecture outlined here is already in daily use: for now, still Claude Desktop as the MCP host
+and orchestrating agent — pending a viable on-premises alternative — together with self-built MCP devices and bridges 
+at the edge, HABPanel (OpenHab) reduced to a pure dashboard role, and the Action Service for deterministic background 
+rules.
 
-However, two areas remain unresolved in the stack described above: security — including sandboxing of dynamically
-generated code and human-in-the-loop verification for safety-critical actuators — and the transition from cloud-hosted 
-models (such as the one behind Claude Desktop) to fully on-premises LLMs.
+The biggest open challenge in the current OpenAction service — the reference implementation of the
+Action Service architecture — is the production-grade realization of the security mechanisms outlined
+earlier: in particular reliable sandboxing of dynamically generated code and seamless human-in-the-loop
+verification for safety-critical actuators.
