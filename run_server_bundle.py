@@ -7,10 +7,6 @@ from opendiscovery_server import OpenDiscoveryServer
 
 
 
-
-
-
-
 if __name__ == '__main__':
     # Globally setup format and log level for the application root
     logging.basicConfig(format='%(asctime)s %(name)-20s: %(levelname)-8s %(message)s', level=logging.INFO, datefmt='%Y-%m-%d %H:%M:%S')

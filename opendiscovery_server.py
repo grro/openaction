@@ -14,6 +14,7 @@ from simple_store import ScopedStore, SimpleStore
 logger = logging.getLogger(__name__)
 
 
+
 # How long the mDNS browser is allowed to collect responses per scan cycle.
 SCAN_TIMEOUT_SECONDS = 2.0
 

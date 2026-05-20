@@ -21,6 +21,7 @@ SCAN_INTERVAL_SECONDS = 60
 _FORBIDDEN_NAME_CHARS = (',', '.', ' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|')
 
 
+
 class ManagedTaskRepository:
     """
     Registry that owns the live :class:`ManagedTask` instances and keeps
