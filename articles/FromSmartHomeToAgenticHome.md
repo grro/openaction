@@ -39,8 +39,6 @@ To combat this fragmentation of user interfaces and smart home protocols, open-s
 like openHAB and Home Assistant have emerged with the goal of universal compatibility. They
 utilize a plug-in architecture that allows new devices or protocols to be continuously integrated.
 
-![img.png](img.png)
-
 Typically, a protocol-specific connector plug-in implements a common interface, abstracting the
 technical nuances of the protocol. This ensures that the technical complexities are hidden from
 the automation rules. This community-driven approach even extends to closed protocols, which are
@@ -48,6 +46,8 @@ often reverse-engineered and released as community plug-ins. However, this metho
 significant bottleneck: integrating a new device type usually requires manual, explicit
 programming to extend the plug-in. Overcoming this constant need for manual integration remains
 one of the greatest challenges in the smart home industry today.
+
+![img.png](img.png)
 
 Users typically configure automation rules through graphical user interfaces (GUIs) or, for more
 advanced setups, custom expert scripts. Further complicating the user experience, each smart home
@@ -91,8 +91,8 @@ routines. Crucially, when user behavior or daily routines shift, the agent can d
 the overall smart home controls without requiring manual reconfiguration.
 
 ## MCP Interface
-To communicate with devices, the agent ideally uses the Model Context Protocol (MCP). All actuators
-and sensors expose an MCP interface optimized for agentic clients. Unlike classical device APIs,
+To communicate with devices, the agent ideally uses the Model Context Protocol (MCP). In the target state, all 
+actuators and sensors expose an MCP interface optimized for agentic clients. Unlike classical device APIs,
 MCP is built specifically for Large Language Models (LLMs) and autonomous agents: it provides
 built-in self-description, contextual metadata, and semantic meaning. An MCP interface explains
 to the agent what the device is, what its current state means, and how to interact with it —
