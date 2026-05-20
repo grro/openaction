@@ -2,11 +2,15 @@
 ![img_5.png](img_5.png)
 
 # From Smart Home to Agentic Home
-Traditional smart home systems continue to suffer from fragmented ecosystems and often complex, manual configuration 
-effort. With the next logical evolutionary step — the "Agentic Home" — autonomous AI agents will take over central 
-control and interact naturally with the user. This article outlines a target architecture, from a maker perspective, 
-behind this paradigm shift, demonstrating how modern LLM agents, combined with the Model Context Protocol (MCP), may 
-enable seamless device integration.
+A maker’s target architecture for autonomous LLM agents, MCP, and
+deterministic background rules.
+
+Traditional smart home systems continue to suffer from fragmented
+ecosystems and often complex, manual configuration effort. With the next
+logical evolutionary step — the "Agentic Home" — autonomous AI agents will
+take over central control and interact naturally with the user. This article
+outlines a target architecture, from a maker perspective, behind this
+paradigm shift, demonstrating how modern LLM agents, combined
 
 ## The Traditional Smart Home Approach
 Today's smart home landscape is largely defined by fragmented ecosystems. At its core, a smart home relies on 
@@ -153,36 +157,29 @@ A prominent example of how powerful mDNS-based discovery can be is the Matter pr
 discovery and commissioning workflow on top of mDNS, combined with a standardized device data model. However, this 
 mechanism applies only to devices within the Matter ecosystem—non-Matter devices remain invisible to it.
 
-## If-This-Then-That Actions
-By leveraging the MCP interfaces of discovered devices, the agent can seamlessly use the exposed tools and resources 
-to query real-time sensor data and trigger precise state changes on actuators. State-of-the-art agents handle these 
-kinds of ad-hoc commands ("Do-That") very well. Their support is much weaker, however, for continuous background
-processing—recurring actions or actions triggered by external events such as outside temperature, brightness,
-wind speed, or motion. With ad-hoc operations, the user sees the result immediately and can correct any 
-faulty execution on the spot. For recurring, event-triggered "If-This-Then-That" actions, this safety net is 
-missing: non-deterministic or hallucinated behavior typically goes unnoticed at the moment it happens and 
-can quietly cause harm over time.
+## Extending the Agent: Deterministic Action Services
+By leveraging the MCP interfaces of discovered devices, the agent can seamlessly use the exposed tools and resources
+to query real-time sensor data and trigger precise state changes on actuators.
+While state-of-the-art agents excel at handling ad-hoc, real-time commands ("Do-That"), continuous background processing
+presents a unique challenge. Relying on an LLM to constantly monitor recurring events or environmental triggers
+introduces non-deterministic risks, where hallucinated behavior can quietly cause harm over time without immediate user oversight.
 
-To ensure deterministic behavior, the agent can be supplemented with a dedicated Action Service that executes
-"If-This-Then-That" rules on its behalf (as well as ad-hoc "Do-That" commands).  An architectural study of the
-Action Service, developed by the author, is available at [OpenAction](https://github.com/grro/openaction).
+To overcome this, the agent's architecture is extended by a dedicated, deterministic Action Service. Rather than
+reverting to a traditional, isolated smart home hub, the Action Service acts as the agent's execution arm, running
+safely and predictably on its behalf.
 
-The Action Service is built around rules that are bound to a specific trigger—an exact point in time, a recurring
-cron schedule, an external event such as "motion detected", or a manual trigger—and carry out a well-defined action,
-such as turning on the exterior lights.
+An architectural study of such a framework, developed by the author, is available at OpenAction. Within this ecosystem,
+the agent functions as a dynamic developer: it reasons about routines, synthesizes the required logic into an action
+script, and deploys it directly to the Action Service. Crucially, if a specific driver or connector is not natively
+available within the execution infrastructure, the agent can bundle the necessary communication code directly into the
+rule script itself. For example, an automation script written to toggle an exterior light using a Shelly relay can
+seamlessly encapsulate the raw, Shelly-specific HTTP API call code directly inside its own execution block.
 
-Rule execution is decoupled from the agent itself. This means the agent acts more like a developer who writes 
-the action script and deploys it to a corresponding Action Service. Crucially, if a specific driver or connector
-is not natively available within the execution infrastructure, the agent can bundle the necessary communication 
-code directly into the rule script itself. For example, an automation script written to toggle an exterior light
-using a Shelly relay can seamlessly encapsulate the raw, Shelly-specific HTTP API call code directly inside its 
-own execution block.
-
-Once a script is generated, its day-to-day execution runs completely independently of the AI agent. However, the 
-agent always retains the ability to adapt, refactor, and refine these background scripts at any time.
+Once a script is generated and deployed, its day-to-day operation runs completely independently of the AI agent to
+guarantee real-time safety and eliminate context overhead. However, the agent always retains full authority to refactor,
+optimize, and adapt these background rules whenever behavioral patterns or user routines shift.
 
 ![img_3.png](img_3.png)
-
 
 ## Conclusion
 The transition from a traditional "Smart Home" to an "Agentic Home" represents a fundamental paradigm shift in how we 
