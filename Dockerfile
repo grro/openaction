@@ -14,6 +14,6 @@ ADD examples/*.py /etc/app/examples/
 ADD requirements.txt /etc/app/.
 RUN pip install -r requirements.txt
 
-CMD ["sh", "-c", "python /etc/app/run_server.py \"$port\" \"$work_dir\" \"$devices\" "]
+CMD ["sh", "-c", "python /etc/app/run_server_bundle.py \"$port\" \"$work_dir\" \"$devices\" "]
 
 

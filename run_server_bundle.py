@@ -1,8 +1,8 @@
 import sys
 import logging
-from config import Configs
-from openaction import OpenActionServer
-from opendiscovery import OpenDiscoveryServer
+from service_registry import Configs
+from openaction_server import OpenActionServer
+from opendiscovery_server import OpenDiscoveryServer
 
 
 

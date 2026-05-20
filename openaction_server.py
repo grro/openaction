@@ -3,13 +3,12 @@ import sys
 import logging
 import importlib.metadata
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 from typing import  List
 
-from mcp_server import McpServer
-from store_impl import SimpleStore
+from mcp_server_base import McpServer
+from simple_store import SimpleStore
 from managed_task import ManagedTask, ManagedTaskFactory
-from task_repository import ManagedTaskRepository
+from managed_task_repository import ManagedTaskRepository
 
 
 
@@ -61,8 +60,7 @@ class OpenActionServer(McpServer):
         super().__init__(name, port, host)
         self.store = SimpleStore(name="state", directory=dir)
         self.execution_history = ExecutionHistory(15)
-        self.executors = ThreadPoolExecutor(max_workers=20, thread_name_prefix="Taskexecutor")
-        self.task_factory = ManagedTaskFactory(self.store, self.executors)
+        self.task_factory = ManagedTaskFactory(self.store)
         self.task_repository = ManagedTaskRepository(os.path.join(dir, "tasks"), self.task_factory, self.store)
         self.task_repository.start()
 
@@ -483,7 +481,7 @@ class OpenActionServer(McpServer):
 
                 # 2. Run the task (returns a TaskResult object)
                 # Using a standardized trigger name for clear history tracking
-                result = task._execute_sync("manual_ephemeral_execution", [])
+                result = task.execute_manually("manual_ephemeral_execution", [])
 
                 # Update the shared execution history buffer
                 # This allows get_task and manual_execution_history to retrieve it later
@@ -507,7 +505,5 @@ class OpenActionServer(McpServer):
 
     def stop(self):
         self.task_repository.stop()
-        self.mdns.unregister_mdns(self.name)
-        self.executors.shutdown(wait=False)
         super().stop()
 
