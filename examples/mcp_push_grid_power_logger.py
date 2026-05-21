@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastmcp import Client
 
+
 logger = logging.getLogger(__name__)
 
 # --- Configuration ----------------------------------------------------------
