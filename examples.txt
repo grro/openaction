@@ -1,5 +1,8 @@
 
-Nutze opnenDev und openDiscovery
+Nutze opnenDev und openDiscovery. Präferiere MCP
+
+
+Nutze den servcie action und openDiscovery.
 
 
 Die Steuerung des Bürorollladens erfolgt grundsätzlich automatisiert nach dem Sonnenstand: Er öffnet sich bei
@@ -12,7 +15,7 @@ Wenn niemand anwesend ist, muss das System in den Einbruchschutzmodus wechseln. 
 der Rollladen in zufälligen Abständen für eine zufällige Dauer von 15 bis 60 Minuten ganz teilweise geschlossen (zwischen 20 und 70% geschlossen).
 Dies soll eine Anwesenheit vortäuschen. Sobald jemand zu Hause ist, wechselt das System in den Normalmodus.
 
-
+ Präferiere MCP
 
 
 
