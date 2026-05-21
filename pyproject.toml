@@ -24,8 +24,6 @@ dependencies = { file = ["requirements.txt"] }
 packages = ["api"]
 py-modules = [
     "cron",
-    "http_client",
-    "mcp_client",
     "openaction",
     "services",
     "store",
