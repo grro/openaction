@@ -19,7 +19,7 @@ intent into dynamic, executable scripts — giving your smart home the ability t
 
 ## Architecture & Workflow
 
-The system acts as a bridge between high-level reasoning (Agents) and low-level hardware control. Here, the agent acts as a software 
+The system acts as a bridge between high-level reasoning (Agents) and low-level hardware control. Here, the agent acts as a software
 developer who can introspect services and write custom, deterministic Python scripts to control the smart home devices.
 The workflow is as follows:
 
@@ -29,3 +29,4 @@ The workflow is as follows:
 4.  **The Execution:** When triggered, the script runs in a local sandbox, calling the endpoints of connected **Sensors & Actuators**.
 
 ---
+
