@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+/work/tasks/shelly_energy_meter_reader/shelly_energy_meter_reader.desc
+/work/tasks/shelly_energy_meter_reader/shelly_energy_meter_reader.props
+/work/tasks/shelly_energy_meter_reader/shelly_energy_meter_reader.py
+/work (2).zip
+/work/state.json.gz
+/uv.lock
+/work.zip
+/example.txt
