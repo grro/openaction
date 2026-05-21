@@ -232,8 +232,8 @@ class CodeRepository:
         List all images currently stored in the repository.
 
         Args:
-            incl_temp: If ``False`` (default), temporary (unfinished)
-                images are filtered out. Directories whose name starts
+            incl_temp: If ``False`` (default), temporary images are filtered out.
+                Directories whose name starts
                 with ``_`` are always skipped (treated as hidden).
         """
         if not self._codedir.exists() or not self._codedir.is_dir():
