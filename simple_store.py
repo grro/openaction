@@ -20,36 +20,36 @@ class Entry:
     """
     A single value held by :class:`SimpleStore`, together with its expiration date.
 
-    Entries are the internal storage unit of :class:`SimpleStore`. They wrap the
-    user-provided value and the absolute point in time at which the value should
-    be considered stale. An entry with ``expire_date == datetime.max`` effectively
-    never expires.
+    An ``Entry`` is the unit of storage inside :class:`SimpleStore`. The
+    ``value`` may be any JSON-serializable Python object (str, int, float,
+    bool, None, list, dict). The ``expire_date`` is an absolute point in
+    time after which the entry is considered stale and will be filtered
+    out from reads and dropped during the next disk sync.
 
-    The class is JSON-friendly: :meth:`to_dict` / :meth:`from_dict` provide a
-    round-trippable representation used when the store is persisted to disk.
+    Use :attr:`datetime.max` as ``expire_date`` to indicate that the
+    entry should never expire.
     """
 
     def __init__(self, value: Any, expire_date: datetime):
         """
         Args:
-            value: Arbitrary, JSON-serializable payload to store.
-            expire_date: Absolute expiration timestamp. Use ``datetime.max`` for
-                "no expiration".
+            value: The payload to store. Must be JSON-serializable.
+            expire_date: Absolute timestamp after which the entry is expired.
         """
         self.value = value
         self.expire_date = expire_date
 
     def is_expired(self) -> bool:
-        """Return ``True`` if the current local time is past :attr:`expire_date`."""
+        """Return ``True`` if the current wall-clock time is past :attr:`expire_date`."""
         return datetime.now() > self.expire_date
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize this entry to a plain dict suitable for JSON encoding."""
+        """Serialize the entry to a JSON-friendly ``dict`` (used by :meth:`SimpleStore._store`)."""
         return {"value": self.value, "expire_date": self.expire_date.isoformat()}
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Entry":
-        """Recreate an :class:`Entry` from its :meth:`to_dict` representation."""
+        """Inverse of :meth:`to_dict`; reconstruct an ``Entry`` from its JSON form."""
         return Entry(data["value"], datetime.fromisoformat(data["expire_date"]))
 
     def __str__(self) -> str:
@@ -60,39 +60,61 @@ class Entry:
 
 class SimpleStore(Store):
     """
-    A lightweight, thread-safe, file-backed key-value store.
+    A lightweight, thread-safe, file-backed key-value store with per-entry TTL.
 
-    Behavior:
-        * All data lives in memory in a ``dict[str, Entry]`` and is persisted to
-          a single gzipped JSON file located at :attr:`filename`.
-        * Each entry may carry a TTL. Expired entries are hidden from reads
-          (:meth:`get`, :meth:`keys`, :meth:`values`, :meth:`has`) and physically
-          removed during the next disk flush.
-        * Writes are flushed to disk immediately by default. When
-          ``sync_period_sec`` is set, multiple writes within that interval are
-          coalesced into a single flush to reduce disk I/O.
-        * Disk writes are atomic: data is first written to a temporary file in
-          the same directory and then moved into place via :func:`os.replace`,
-          which is atomic on both POSIX and Windows.
-        * A lock serializes concurrent flushes from different threads, avoiding
-          race conditions on the underlying file (notably the Windows
-          "file is being used by another process" error).
+    Design
+    ------
+    * **In-memory first:** All data lives in a plain ``dict`` for O(1) access.
+      The on-disk file is treated purely as a persistence snapshot.
+    * **Gzipped JSON on disk:** State is serialized to ``<name>.json.gz`` inside
+      the configured directory. Using gzip keeps the footprint small for
+      stores dominated by repetitive keys/strings.
+    * **Atomic writes:** Each flush writes to a temporary sibling file and
+      then uses :func:`os.replace` to swap it into place. This avoids
+      partially-written files on crash and works on both POSIX and Windows.
+    * **Thread-safe persistence:** A :class:`threading.Lock` serializes the
+      actual file replacement, which prevents the typical
+      ``WinError 32: file is being used by another process`` race when
+      multiple threads flush concurrently.
+    * **TTL semantics:** Expired entries are hidden from all read methods
+      immediately and physically removed during the next :meth:`_store`
+      cycle.
 
-    Notes:
-        Values returned by :meth:`get` and :meth:`values` are deep-copied so that
-        callers can mutate them without affecting the stored state.
+    Write batching
+    --------------
+    By default every mutation (:meth:`put`, :meth:`delete`) is flushed to
+    disk immediately. If you pass ``sync_period_sec`` to the constructor,
+    flushes are coalesced: a mutation only triggers a write once that many
+    seconds have elapsed since the previous flush. This is useful for
+    high-throughput workloads where you can tolerate losing the last few
+    seconds of writes on a crash.
+
+    Storage location
+    ----------------
+    If ``directory`` is omitted, the platform-appropriate user data
+    directory is used (via :func:`platformdirs.site_data_dir` under the
+    application name ``"simpledb"``).
+
+    Example
+    -------
+    >>> store = SimpleStore("my_app")
+    >>> store.put("greeting", "hello", ttl_sec=60)
+    >>> store.get("greeting")
+    'hello'
     """
 
     def __init__(self, name: str, sync_period_sec: int | None = None, directory: str | None = None):
         """
         Args:
-            name: Logical store name. The on-disk file is ``<name>.json.gz``.
-            sync_period_sec: If provided, batches writes and only flushes once
-                this many seconds have elapsed since the last flush. ``None``
-                (the default) flushes after every mutating operation.
-            directory: Directory in which the data file lives. Defaults to the
-                platform-specific user data directory (see :mod:`platformdirs`).
-                Created automatically if missing.
+            name: Logical store name. Used as the on-disk file stem
+                (``<name>.json.gz``). Pick something filesystem-safe.
+            sync_period_sec: Optional minimum interval between disk flushes.
+                ``None`` (the default) flushes after every mutation. Any
+                positive integer enables write batching with that many
+                seconds of granularity.
+            directory: Optional absolute path to the storage directory.
+                Defaults to the OS user data directory for application
+                ``"simpledb"``. The directory is created if missing.
         """
         self._name = name
         self.sync_period_sec = sync_period_sec
@@ -100,10 +122,10 @@ class SimpleStore(Store):
         self._directory.mkdir(parents=True, exist_ok=True)
 
         self._data: dict[str, Entry] = self._load()
-        # Force the first write to happen on the next put/delete, regardless of
-        # how sync_period_sec is configured.
+        # Backdate the last flush so the very next mutation will write,
+        # regardless of `sync_period_sec`.
         self._last_time_stored = datetime.now() - timedelta(days=2)
-        # Serializes _store() so concurrent writers don't race on the same file.
+        # Guards _store() so concurrent writers don't race on the same file.
         self._write_lock = threading.Lock()
         logger.info(f"simple db: using {self.filename} ({len(self._data)} entries)")
 
@@ -114,36 +136,51 @@ class SimpleStore(Store):
         """
         Absolute path of the gzipped JSON file backing this store.
 
-        The parent directory is (re-)created on access, so the property is safe
-        to call even if the directory has been removed at runtime.
+        The directory is (re-)created on access so callers may safely use
+        this property even after the directory has been removed
+        externally.
         """
         self._directory.mkdir(parents=True, exist_ok=True)
         return self._directory / f"{self._name}.json.gz"
 
     def __len__(self) -> int:
-        """Return the total number of entries, including expired ones not yet purged."""
+        """
+        Return the total number of stored entries, **including expired ones**.
+
+        Expired entries are pruned lazily on the next flush, so this count
+        can temporarily exceed ``len(self.keys())``.
+        """
         return len(self._data)
 
     def keys(self) -> list[str]:
-        """Return all keys whose entries have not yet expired."""
+        """Return a snapshot list of all non-expired keys."""
         return [k for k, e in self._data.items() if not e.is_expired()]
 
     def values(self) -> list[Any]:
-        """Return deep copies of all non-expired values."""
+        """
+        Return deep copies of all non-expired values.
+
+        Values are copied so that callers cannot mutate the in-memory
+        store by modifying the returned objects.
+        """
         return [copy.deepcopy(e.value) for e in self._data.values() if not e.is_expired()]
 
     def has(self, key: str) -> bool:
-        """Return ``True`` if ``key`` exists and its entry has not expired."""
+        """Return ``True`` if ``key`` exists and has not expired."""
         entry = self._data.get(key)
         return entry is not None and not entry.is_expired()
 
     def get(self, key: str, default_value: Any = None) -> Any:
         """
-        Return a deep copy of the value for ``key``.
+        Look up ``key`` and return a deep copy of its value.
 
-        Returns ``default_value`` if the key is missing or its entry has expired.
-        Because the result is deep-copied, callers can freely mutate it without
-        affecting the stored state.
+        Args:
+            key: The key to look up.
+            default_value: Returned verbatim if the key is missing or
+                its entry has expired.
+
+        Returns:
+            A deep copy of the stored value, or ``default_value``.
         """
         entry = self._data.get(key)
         if entry is None or entry.is_expired():
@@ -152,17 +189,17 @@ class SimpleStore(Store):
 
     def put(self, key: str, value: Any, ttl_sec: int | None = None) -> None:
         """
-        Insert or update the entry for ``key``.
+        Insert or update an entry.
 
         Args:
             key: The key to write.
-            value: The new value. Should be JSON-serializable so it survives the
-                next disk flush.
-            ttl_sec: Optional time-to-live in seconds. ``None`` (the default)
-                means the entry never expires.
+            value: Any JSON-serializable value.
+            ttl_sec: Time-to-live in seconds. ``None`` (the default)
+                stores the entry without expiration.
 
-        If the new value and expiration are identical to the current entry the
-        call is a no-op and no disk flush is triggered.
+        Notes:
+            If the new ``value`` and ``ttl_sec`` are identical to what is
+            already stored, this call is a no-op (no disk write).
         """
         expire_date = datetime.max if ttl_sec is None else datetime.now() + timedelta(seconds=ttl_sec)
 
@@ -175,17 +212,17 @@ class SimpleStore(Store):
         self._maybe_sync()
 
     def delete(self, key: str) -> None:
-        """Remove the entry for ``key`` if it exists. No-op otherwise."""
+        """Remove ``key`` if present. A no-op if the key does not exist."""
         if self._data.pop(key, None) is not None:
             self._maybe_sync()
 
     def clear(self) -> None:
-        """Remove all entries and immediately flush the empty state to disk."""
+        """Remove **all** entries and flush the empty state to disk immediately."""
         self._data.clear()
         self._store()
 
     def get_values(self) -> list[Any]:
-        """Deprecated alias for :meth:`values`."""
+        """Deprecated alias of :meth:`values`. Will be removed in a future release."""
         logger.warning("Store#get_values is deprecated. Use Store#values instead")
         return self.values()
 
@@ -193,11 +230,11 @@ class SimpleStore(Store):
 
     def _maybe_sync(self) -> None:
         """
-        Flush to disk depending on the configured sync policy.
+        Flush to disk respecting the optional ``sync_period_sec`` budget.
 
-        When ``sync_period_sec`` is ``None`` every call triggers a flush.
-        Otherwise the call only flushes if the configured interval has elapsed
-        since the previous successful flush.
+        When batching is disabled (``sync_period_sec is None``) every call
+        triggers a write. Otherwise a write is only performed once the
+        configured interval has elapsed since the previous flush.
         """
         if self.sync_period_sec is None or \
                 datetime.now() >= self._last_time_stored + timedelta(seconds=self.sync_period_sec):
@@ -205,17 +242,17 @@ class SimpleStore(Store):
             self._last_time_stored = datetime.now()
 
     def _remove_expired(self) -> None:
-        """Physically drop all expired entries from the in-memory dict."""
+        """Drop every entry whose TTL has elapsed. Called right before each flush."""
         for key in [k for k, e in self._data.items() if e.is_expired()]:
             del self._data[key]
 
     def _load(self) -> dict[str, Entry]:
         """
-        Load and decode the on-disk state.
+        Read and deserialize the backing file.
 
-        Returns an empty dict if the file does not exist or cannot be parsed.
-        Errors are logged at WARNING level and otherwise swallowed so that a
-        corrupted state file cannot prevent the application from starting.
+        Returns an empty dict if the file does not exist or cannot be
+        parsed; in the latter case a warning is logged but the error is
+        otherwise swallowed so the store remains usable.
         """
         if not self.filename.is_file():
             return {}
@@ -229,23 +266,24 @@ class SimpleStore(Store):
 
     def _store(self) -> None:
         """
-        Atomically persist the current in-memory state to disk.
+        Atomically persist the current in-memory state.
 
-        The implementation:
-            1. Acquires :attr:`_write_lock` so concurrent flushes serialize
-               instead of racing on the same target file (a common cause of
-               ``WinError 32`` on Windows).
-            2. Drops expired entries before serializing.
-            3. Writes the gzipped JSON payload to a uniquely-named temp file
-               in the same directory.
-            4. Replaces the target file via :func:`os.replace`, which is atomic
-               on both POSIX and Windows and is allowed to overwrite an
-               existing destination.
-            5. Best-effort removes the temp file if any preceding step failed.
+        Steps:
+            1. Acquire :attr:`_write_lock` to serialize concurrent writers.
+            2. Prune expired entries so they do not get persisted.
+            3. Write the JSON payload to a uniquely-named temp file in the
+               same directory (so :func:`os.replace` stays on the same
+               filesystem).
+            4. :func:`os.replace` the temp file onto the target path. This
+               operation is atomic on both POSIX and Windows and is the
+               only step that other readers can observe.
+            5. Clean up the temp file if it still exists after a failure.
+
+        Errors are logged and suppressed so a transient I/O failure does
+        not crash the calling thread.
         """
-        # Serialize writers so that two threads don't try to replace the same
-        # file at once. On Windows this is the typical cause of
-        # "WinError 32: file is being used by another process".
+        # Serialize writers so that two threads don't try to replace the same file at once.
+        # On Windows this is the typical cause of "WinError 32: file is being used by another process".
         with self._write_lock:
             try:
                 self._remove_expired()
@@ -253,6 +291,7 @@ class SimpleStore(Store):
                 logger.error(f"Error removing expired records: {error}")
 
             # Write to a temp file first, then atomically move it into place.
+            # os.replace() is atomic on POSIX and Windows and allows overwriting an existing target.
             tempname = self.filename.with_suffix(f".{randint(0, 10000)}.temp")
             try:
                 data = {name: entry.to_dict() for name, entry in self._data.items()}
@@ -271,33 +310,44 @@ class SimpleStore(Store):
 
 class ScopedStore(Store):
     """
-    A view onto a :class:`SimpleStore` that transparently namespaces every key.
+    A namespacing view over an existing :class:`Store`.
 
-    Each operation prepends ``"<scope><separator>"`` to the key before
-    delegating to the wrapped store. This allows multiple unrelated components
-    to share a single underlying :class:`SimpleStore` without risking key
-    collisions, while still presenting a clean, scope-local API to their
-    callers.
+    ``ScopedStore`` is a thin decorator that prefixes every key with a
+    fixed ``scope`` string (separated by ``separator``, default ``":"``)
+    before delegating to the underlying store. It owns no state of its
+    own and performs no I/O beyond what the wrapped store does.
 
-    Example::
+    Typical use case: give each component, task, or tenant its own
+    isolated namespace inside a single shared :class:`SimpleStore`
+    instance, without having to manage prefixes manually at every call
+    site.
 
-        store = SimpleStore("shared")
-        task1 = ScopedStore(store, "task1")
-        task2 = ScopedStore(store, "task2")
+    Example
+    -------
+    >>> backing = SimpleStore("shared")
+    >>> task1 = ScopedStore(backing, "task1")
+    >>> task2 = ScopedStore(backing, "task2")
+    >>> task1.put("status", "running")   # physically stored as "task1:status"
+    >>> task2.put("status", "idle")      # physically stored as "task2:status"
+    >>> task1.get("status")
+    'running'
+    >>> task1.keys()
+    ['status']
 
-        task1.put("status", "running")  # stored as "task1:status"
-        task2.put("status", "idle")     # stored as "task2:status"
-
-        task1.keys()  # -> ["status"]   (prefix is stripped on read)
+    Note
+    ----
+    Keys returned by :meth:`keys` have the scope prefix stripped, so
+    consumers see the same view they would get from a dedicated store.
     """
 
     def __init__(self, store: SimpleStore, scope: str, separator: str = ":"):
         """
         Args:
-            store: The underlying store that physically holds the data.
-            scope: Namespace prefix applied to every key.
-            separator: Character(s) inserted between the scope and the user
-                key. Defaults to ``":"``.
+            store: The underlying store that actually persists data.
+            scope: The namespace prefix applied to every key.
+            separator: Character(s) inserted between scope and key.
+                Defaults to ``":"``. Pick something that cannot appear in
+                your real keys to keep :meth:`keys` unambiguous.
         """
         self._store = store
         self._scope = scope
@@ -306,23 +356,23 @@ class ScopedStore(Store):
 
     @property
     def scope(self) -> str:
-        """The namespace prefix used by this view (without the separator)."""
+        """The scope/prefix associated with this view."""
         return self._scope
 
     def _scoped(self, key: str) -> str:
-        """Return the fully-qualified key as stored in the underlying store."""
+        """Return ``key`` decorated with this store's scope prefix."""
         return self._prefix + key
 
     def put(self, key: str, value: Any, ttl_sec: int | None = None) -> None:
-        """Write ``value`` for ``key`` in this scope. See :meth:`SimpleStore.put`."""
+        """See :meth:`SimpleStore.put`; the key is transparently prefixed."""
         self._store.put(self._scoped(key), value, ttl_sec)
 
     def get(self, key: str, default_value: Any = None) -> Any:
-        """Read the value for ``key`` in this scope. See :meth:`SimpleStore.get`."""
+        """See :meth:`SimpleStore.get`; the key is transparently prefixed."""
         return self._store.get(self._scoped(key), default_value)
 
     def delete(self, key: str) -> None:
-        """Delete ``key`` from this scope. No-op if the key is missing."""
+        """See :meth:`SimpleStore.delete`; the key is transparently prefixed."""
         self._store.delete(self._scoped(key))
 
     def keys(self) -> list[str]:
