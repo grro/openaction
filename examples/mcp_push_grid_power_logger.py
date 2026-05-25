@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ----------------------------------------------------------
 
-MCP_URL = "http://192.168.1.99:8411/sse"
+MCP_URL = "http://192.168.0.100:8411/sse"
 RESOURCE_URI = "sensor://metrics/grid_power"
 TZ = ZoneInfo("Europe/Berlin")
 STALE_AFTER = timedelta(minutes=3)

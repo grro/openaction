@@ -9,9 +9,9 @@ from astral.sun import sun
 from api.environment import Environment
 from api.task import BackgroundTask
 
-SHUTTER_URL = "http://192.168.1.99:8320/0/properties/position"
+SHUTTER_URL = "http://192.168.0.100:8320/0/properties/position"
 TZ = ZoneInfo("Europe/Berlin")
-LOCATION = LocationInfo("Neustadt", "DE", "Europe/Berlin", 49.3508, 8.1395)
+LOCATION = LocationInfo("Metropolis", "XX", "Europe/Berlin", 0.0, 0.0)
 
 OPEN_EARLIEST, OPEN_LATEST = time(6, 0), time(9, 0)
 CLOSE_EARLIEST, CLOSE_LATEST = time(16, 0), time(22, 0)

@@ -12,7 +12,7 @@ from api.task import BackgroundTask
 logger = logging.getLogger(__name__)
 
 # --- Configuration ----------------------------------------------------------
-MCP_URL = "http://192.168.1.99:8322/sse"
+MCP_URL = "http://192.168.0.100:8322/sse"
 SHUTTER_NAME = "office"
 TZ = ZoneInfo("Europe/Berlin")
 
