@@ -227,7 +227,7 @@ class ManagedTaskRepository:
 
     def _perform_autobackup(self) -> None:
         latest_backup = datetime.strptime(self._store.get("__system_latest_backup", "1970-01-01"), "%Y-%m-%d")
-        if datetime.now() > latest_backup + timedelta(hours=7):
+        if datetime.now() > (latest_backup + timedelta(hours=7)):
             filepath = self._code_repository.backup(f"backup_{datetime.now().strftime('%Y%m%d')}.zip")
             self._store.put("__system_latest_backup", datetime.now().strftime("%Y-%m-%d"))
 
