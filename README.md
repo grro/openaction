@@ -31,3 +31,24 @@ The workflow is as follows:
 4.  **The Execution:** When triggered, the script runs in a local sandbox, calling the endpoints of connected **Sensors & Actuators**.
 
 ---
+
+## How to Use It
+
+
+### 1. Running via Docker
+You can also run OpenAction as a Docker container. Use host networking to allow the server to easily discover and communicate with local network devices. Mount a local directory to preserve the working state (scripts and store data) across container restarts.
+
+```bash
+sudo docker run -d --name openaction --restart always --log-driver local --log-opt max-size=10m --log-opt max-file=3 --network host -v /etc/script/openaction:/etc/work -e devices='' grro/openaction:0.0.30
+```
+*Note: Make sure to map a persistent volume to `/etc/work` so that your environment state and custom scripts are not lost when the container is recreated.*
+
+
+### 2. Testing with MCP Inspector
+You can test the server capabilities and available tools of the running Docker container using the official MCP Inspector via Server-Sent Events (SSE):
+```bash
+npx @modelcontextprotocol/inspector sse http://localhost:8080/sse
+```
+Once started, open the provided localhost URL (e.g., `http://localhost:5173/`) in your browser to inspect the MCP tools and resources.
+
+---
