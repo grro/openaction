@@ -4,7 +4,9 @@ import shutil
 from pathlib import Path
 from datetime import datetime, timedelta
 from threading import Event
-from typing import Dict, Set
+from typing import Dict, Set, List
+
+from attr import dataclass
 
 from code_repository import CodeRepository
 from simple_store import SimpleStore
@@ -20,6 +22,14 @@ _FORBIDDEN_NAME_CHARS = (',', '.', ' ', '/', '\\', ':', '*', '?', '"', '<', '>',
 DAY_PATTERN = '%Y%m%d'
 BACKUP_KEY = "__system_latest_backup"
 
+
+
+@dataclass(frozen=True)
+class Backup():
+    type: str
+    name: str
+    size: int
+    path: Path
 
 
 class ManagedTaskRepository:
@@ -276,3 +286,24 @@ class ManagedTaskRepository:
                 except Exception as e:
                     logger.warning(f"Failed to delete old daily backup {p.name}: {e}")
 
+
+    def backups(self) -> List[Backup]:
+        backup_files_list = self._code_repository.backupfiles()
+        result = []
+        for file_str in backup_files_list:
+            p = Path(file_str)
+            if not p.exists():
+                continue
+            name = p.name
+            size = p.stat().st_size
+
+            name_part = p.stem.replace("backup_", "")
+            if len(name_part) == 6 and name_part.isdigit():
+                b_type = "monthly"
+            elif len(name_part) == 8 and name_part.isdigit():
+                b_type = "daily"
+            else:
+                b_type = "other"
+            result.append(Backup(type=b_type, name=name, size=size, path=p))
+        result.sort(key=lambda b: b.name, reverse=True)
+        return result

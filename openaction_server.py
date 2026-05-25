@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import base64
 import importlib.metadata
 from pathlib import Path
 from typing import  List
@@ -517,8 +518,50 @@ class OpenActionServer(McpServer):
                 logger.error(f"Failed to initialize or run ephemeral task '{name}': {e}", exc_info=True)
                 return f"Error: Critical failure during task setup: {type(e).__name__} - {str(e)}"
 
+        @self.mcp.tool()
+        def backups() -> str:
+            """
+            Returns a list of all available backups with their types and sizes.
+            """
+            try:
+                backup_list = self.task_repository.backups()
+                if not backup_list:
+                    return "No backups currently available."
+
+                lines = [
+                    "### 🗄️ Available Backups",
+                    "======================="
+                ]
+                for b in backup_list:
+                    size_kb = b.size / 1024
+                    lines.append(f"- **{b.name}** (`{b.type}`) - {size_kb:.1f} KB")
+
+                return "\n".join(lines)
+            except Exception as e:
+                logger.error(f"Failed to retrieve backups: {e}", exc_info=True)
+                return f"Error: Could not retrieve backups: {e}"
+
+        @self.mcp.tool()
+        def backup_file(name: str) -> str:
+            """
+            Retrieve the binary contents of a specific backup file as a base64 string.
+            """
+            try:
+                # Find the backup in the repository safely rather than allowing arbitrary path traversal
+                backup_list = self.task_repository.backups()
+                target = next((b for b in backup_list if b.name == name), None)
+
+                if not target:
+                    return f"Error: Backup '{name}' not found."
+
+                raw_bytes = target.path.read_bytes()
+                encoded_string = base64.b64encode(raw_bytes).decode('utf-8')
+                return encoded_string
+
+            except Exception as e:
+                logger.error(f"Failed to read backup file '{name}': {e}", exc_info=True)
+                return f"Error: Failed to read backup file '{name}': {e}"
 
     def stop(self):
         self.task_repository.stop()
         super().stop()
-

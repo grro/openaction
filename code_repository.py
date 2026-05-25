@@ -273,4 +273,3 @@ class CodeRepository:
     def backupfiles(self) -> List[str]:
         backup_files = self._codedir.parent.glob("backup_*.zip")
         return sorted((str(p) for p in backup_files))
-
