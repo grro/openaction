@@ -42,13 +42,11 @@ class Event:
 class SimpleEventLog(EventLog):
 
     def __init__(self, store: SimpleStore, name: str) -> None:
-        self._store = ScopedStore(store, name)
         self._log_store = ScopedStore(store, '__sys_eventlog_' + name)
 
     def log_event(self, topic: str, text: str, ttl: int = 24 * 60 * 60) -> None:
         now = datetime.now()
         event = Event(now, topic, text)
-        # Use .to_str() for storage, NOT str()
         self._log_store.put(now.isoformat(), event.to_str(), ttl_sec=ttl)
 
     def events(self) -> List[Event]:
@@ -66,12 +64,12 @@ class SimpleEventLog(EventLog):
 class EnvironmentImpl(Environment):
 
     def __init__(self, store: SimpleStore, name: str) -> None:
-        self._store = store
+        self._scoped_store = ScopedStore(store, name)
         self._eventlog = SimpleEventLog(store, name)
 
     @property
     def store(self) -> Store:
-        return self._store
+        return self._scoped_store
 
     @property
     def eventlog(self) -> EventLog:
@@ -81,4 +79,4 @@ class EnvironmentImpl(Environment):
         return self._eventlog.events()
 
     def store_items(self) -> Dict[str, str]:
-        return {k: self._store.get(k) for k in self._store.keys()}
+        return {k: self._scoped_store.get(k) for k in self._scoped_store.keys()}
