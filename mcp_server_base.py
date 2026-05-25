@@ -145,7 +145,12 @@ class McpServer(ABC):
             f"MCP Server '{self.name}' running on "
             f"http://{self.host}:{self.port}{MCP_DEFAULT_PATH}"
         )
-        await self.mcp.run_async(transport="sse", host=self.host, port=self.port)
+        await self.mcp.run_async(
+            transport="sse",
+            host=self.host,
+            port=self.port,
+            uvicorn_config={"access_log": False, "log_config": None}
+        )
 
     def _run_loop(self) -> None:
         """Thread entry point: install the loop and drive it until stopped."""

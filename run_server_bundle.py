@@ -17,6 +17,9 @@ if __name__ == '__main__':
     logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
     logging.getLogger('starlette.middleware.base').setLevel(logging.WARNING)
     logging.getLogger('fastmcp').setLevel(logging.WARNING)
+    logging.getLogger('mcp').setLevel(logging.WARNING)
+    logging.getLogger('mcp.server').setLevel(logging.WARNING)
+    logging.getLogger('mcp.server.lowlevel.server').setLevel(logging.WARNING)
     logging.getLogger('uvicorn.access').disabled = True
     logging.getLogger('uvicorn.error').setLevel(logging.WARNING)
     logging.getLogger('uvicorn').setLevel(logging.WARNING)
