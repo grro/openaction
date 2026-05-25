@@ -23,7 +23,7 @@ SCAN_INTERVAL_SECONDS = 60
 
 # Services that have not been seen within this window are considered stale
 # and removed from the registry on the next clean-up pass.
-DEFAULT_SERVICE_TTL_DAYS = 30
+DEFAULT_SERVICE_TTL_DAYS = 15
 
 # Key under which the serialized service registry is stored in SimpleStore.
 _STORE_KEY = "services"

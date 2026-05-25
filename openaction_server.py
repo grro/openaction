@@ -387,7 +387,7 @@ class OpenActionServer(McpServer):
                         if not events:
                             lines.append("- *No recent events logged.*")
                         else:
-                            for event in events[:10]: # Limit to top 10 most recent to avoid bloating context
+                            for event in events:
                                 ts = event.timestamp.strftime("%Y-%m-%d %H:%M:%S")
                                 lines.append(f"- **{ts}** | `{event.topic}`: {event.text}")
                         lines.append("")
