@@ -364,7 +364,7 @@ class OpenActionServer(McpServer):
                 else:
                     lines.append("### 🕒 Recent Task Executions (Latest First)")
                     for run in list(reversed(task.last_executions))[:5]:
-                        ts = run.date.strftime("%Y-%m-%d %H:%M:%S")
+                        ts = run.date.strftime("%Y-%m-%dT%H:%M:%S%z")
                         status = "✅ OK" if run.error is None else "❌ ERROR"
                         duration = f"{run.elapsed.total_seconds():.2f}s"
                         trigger = getattr(run, 'trigger', 'unknown')
@@ -388,7 +388,7 @@ class OpenActionServer(McpServer):
                             lines.append("- *No recent events logged.*")
                         else:
                             for event in events:
-                                ts = event.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                                ts = event.timestamp.strftime("%Y-%m-%dT%H:%M:%S%z")
                                 lines.append(f"- **{ts}** | `{event.topic}`: {event.text}")
                         lines.append("")
                 except Exception as e:

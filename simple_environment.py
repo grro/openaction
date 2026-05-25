@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Optional, Dict
 
 from api.environment import Environment
@@ -24,15 +24,16 @@ class Event:
     def from_str(row: str) -> Optional['Event']:
         try:
 
-            timestamp, topic, text = row.split('|')
-            return Event(datetime.fromisoformat(timestamp.strip()), topic.strip(), text.strip())
+            timestamp_str, topic, text = row.split('|')
+            timestamp= datetime.strptime(timestamp_str.strip(), "%Y-%m-%dT%H:%M:%S%z")
+            return Event(timestamp, topic.strip(), text.strip())
         except Exception as e:
             logger.warning(f"Failed to parse event log row '{row}': {e}")
             return None
 
     def to_str(self) -> str:
         # Strict formatting for safe database storage (no spaces around |)
-        return f"{self.timestamp.isoformat()}|{self.topic}|{self.text}"
+        return f"{self.timestamp.strftime("%Y-%m-%dT%H:%M:%S%z")}|{self.topic}|{self.text}"
 
     def __str__(self) -> str:
         # Beautiful formatting for printing/logging
@@ -45,7 +46,7 @@ class SimpleEventLog(EventLog):
         self._log_store = ScopedStore(store, '__sys_eventlog_' + name)
 
     def log_event(self, topic: str, text: str, ttl: int = 24 * 60 * 60) -> None:
-        now = datetime.now()
+        now = datetime.now(UTC)
         event = Event(now, topic, text)
         self._log_store.put(now.isoformat(), event.to_str(), ttl_sec=ttl)
 
