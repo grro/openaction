@@ -257,7 +257,7 @@ class ManagedTaskRepository:
                     except Exception:
                         pass
 
-    def _cleanup_old_daily_backups(self, max_age_day: int = 14) -> None:
+    def _cleanup_old_daily_backups(self, max_age_days: int = 14) -> None:
         now = datetime.now()
         backup_files_list = self._code_repository.backupfiles()  # type: ignore
         for file_str in backup_files_list:
@@ -269,7 +269,7 @@ class ManagedTaskRepository:
             except ValueError:
                 continue
 
-            if now - dt > timedelta(days=max_age_day):
+            if now - dt > timedelta(days=max_age_days):
                 try:
                     p.unlink()
                     logger.info(f"Deleted old daily backup: {p.name}")
