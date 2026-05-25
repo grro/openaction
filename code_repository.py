@@ -253,3 +253,24 @@ class CodeRepository:
                 continue
             images.append(img)
         return images
+
+
+    def backup(self, backup_filename: str) -> Path:
+        archive_file = self._codedir.parent / backup_filename
+        temp_backup_base = archive_file.parent / f"{archive_file.stem}_tmp_{uuid.uuid4().hex[:8]}"
+        temp_archive_path = Path(shutil.make_archive(str(temp_backup_base), "zip", root_dir=self._codedir))
+
+        try:
+            if archive_file.exists():
+                logger.debug(f"Overwriting existing backup file: {archive_file}")
+            temp_archive_path.replace(archive_file)
+            logger.info(f"Backup completed successfully: {archive_file}")
+            return archive_file
+        finally:
+            if temp_archive_path.exists():
+                temp_archive_path.unlink()
+
+    def backupfiles(self) -> List[str]:
+        backup_files = self._codedir.parent.glob("backup_*.zip")
+        return sorted((str(p) for p in backup_files))
+
