@@ -45,7 +45,7 @@ class SimpleEventLog(EventLog):
     def __init__(self, store: SimpleStore, name: str) -> None:
         self._log_store = ScopedStore(store, '__sys_eventlog_' + name)
 
-    def log_event(self, topic: str, text: str, ttl: int = 24 * 60 * 60) -> None:
+    def log_event(self, topic: str, text: str, ttl: int = 48 * 60 * 60) -> None:
         now = datetime.now(UTC)
         event = Event(now, topic, text)
         self._log_store.put(now.isoformat(), event.to_str(), ttl_sec=ttl)
