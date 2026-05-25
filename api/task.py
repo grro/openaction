@@ -2,8 +2,6 @@ from abc import ABC, abstractmethod
 from typing import List
 
 
-
-
 class AdhocTask(ABC):
     """
     Abstract Base Class defining an ad hoc task.
@@ -11,14 +9,20 @@ class AdhocTask(ABC):
     These tasks are triggered manually. Typically, ad hoc tasks are used to implement
     persistent "Do-That" actions by consuming parameters to reach a target state.
 
-    Examples incude:
+    Examples include:
         - Set roller shutter to position X (where X is provided as a parameter).
         - Switch a light on/off (where the target state is provided as a parameter).
     """
 
-    def __init__(self, store: 'Store') -> None:  # type: ignore
-        self.store = store
+    def __init__(self, environment: 'Environment') -> None:  # type: ignore
+        """
+        Initializes the ad hoc task with the system environment.
 
+        Args:
+            environment (Environment): The execution context providing access to
+                core system services like persistent storage and event logging.
+        """
+        self.environment = environment
 
     @abstractmethod
     def on_execute_with_params(self, params: List[str]) -> str:
@@ -35,8 +39,6 @@ class AdhocTask(ABC):
             str: A summary of the execution outcome.
         """
         pass
-
-
 
 
 class BackgroundTask(ABC):
@@ -64,9 +66,9 @@ class BackgroundTask(ABC):
         sessions for each execution call, significantly improving performance and stability.
     """
 
-    def __init__(self, store: 'Store') -> None: # type: ignore
+    def __init__(self, environment: 'Environment') -> None:  # type: ignore
         """
-        Initializes the task with a persistent storage backend and event handler.
+        Initializes the task with the system environment.
 
         Note:
             No processing or background threads should be started inside the
@@ -74,12 +76,11 @@ class BackgroundTask(ABC):
             be deferred to the `on_activate` method.
 
         Args:
-            store (Store): A key-value store provided by the host environment
-                to persist data across task executions and restarts. The store
-                is isolated for each task instance (not shared).
+            environment (Environment): The execution context providing access to
+                core system services like persistent storage and event logging.
+                The environment's store is isolated for each task instance (not shared).
         """
-        self.store = store
-
+        self.environment = environment
 
     @abstractmethod
     def on_activate(self) -> None:
@@ -110,9 +111,9 @@ class BackgroundTask(ABC):
 
         This method contains the core procedural logic. This method should also be
         called if push notifications/webhooks are used to detect changes in the
-        environment. E.g., an MCP-based device may send a notification that a
-        resource has been changed. In this case, the on_execute method should be
-        called to react to the change.
+        environment. For example, if an MCP-based device sends a notification that a
+        resource has been changed, the `on_execute` method should be called to
+        react to the change.
 
         Returns:
             str: A summary of the execution outcome (e.g., "Lights turned off").

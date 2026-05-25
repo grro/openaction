@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import re
@@ -7,6 +6,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastmcp import Client
 
+# Assuming these are available from your API package
+from api.environment import Environment
+from api.task import BackgroundTask
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +63,8 @@ class GridPowerLogger(BackgroundTask):
         without a separate state lock.
     """
 
-    def __init__(self, store: "Store") -> None:
-        super().__init__(store)
+    def __init__(self, environment: Environment) -> None:
+        super().__init__(environment)
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: Client | None = None
@@ -81,9 +83,9 @@ class GridPowerLogger(BackgroundTask):
         # Restore the last known reading so we have something to report even
         # before the first push arrives.
         try:
-            self._current = int(self.store.get(K_CURRENT))
-            self._previous = int(self.store.get(K_PREVIOUS))
-            self._last_dt = datetime.fromisoformat(self.store.get(K_TIMESTAMP))
+            self._current = int(self.environment.store.get(K_CURRENT))
+            self._previous = int(self.environment.store.get(K_PREVIOUS))
+            self._last_dt = datetime.fromisoformat(self.environment.store.get(K_TIMESTAMP))
         except (TypeError, ValueError):
             pass
 
@@ -218,7 +220,7 @@ class GridPowerLogger(BackgroundTask):
     def _set_state(self, state: str) -> None:
         """Update both the in-memory and persistent MCP connection state."""
         self._mcp_state = state
-        self.store.put(K_STATE, state)
+        self.environment.store.put(K_STATE, state)
 
     def _commit_value(self, watts: int) -> None:
         """Persist a new value if it differs from the current one."""
@@ -229,9 +231,9 @@ class GridPowerLogger(BackgroundTask):
         self._last_dt = datetime.now(TZ)
 
         if self._previous is not None:
-            self.store.put(K_PREVIOUS, str(self._previous))
-        self.store.put(K_CURRENT, str(self._current))
-        self.store.put(K_TIMESTAMP, self._last_dt.isoformat(timespec="seconds"))
+            self.environment.store.put(K_PREVIOUS, str(self._previous))
+        self.environment.store.put(K_CURRENT, str(self._current))
+        self.environment.store.put(K_TIMESTAMP, self._last_dt.isoformat(timespec="seconds"))
 
     # --- Business logic -----------------------------------------------------
 

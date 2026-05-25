@@ -7,11 +7,13 @@ from dataclasses import field, InitVar, dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Callable
 
-
-from api.store import Store
 from api.task import BackgroundTask, AdhocTask
-from cron_expression import CronExpression
+from api.store import Store
+from api.eventlog import EventLog
+from api.environment import Environment
+from simple_environment import EnvironmentImpl
 from simple_store import SimpleStore, ScopedStore
+from cron_expression import CronExpression
 
 
 logger = logging.getLogger(__name__)
@@ -121,7 +123,7 @@ class ManagedTask:
     """
 
     def __init__(self,
-                 store: Store,
+                 store: SimpleStore,
                  name: str,
                  is_ephemeral: bool,
                  is_test: bool,
@@ -141,7 +143,7 @@ class ManagedTask:
                 ``"cron"``, ``"run_on_start"``, ``"timeout"``,
                 ``"created_at"`` and ``"valid_to"``.
         """
-        self._scoped_store = store
+        self._store = store
         self.name = name
         self.description = desc
         self.props = props
@@ -149,6 +151,7 @@ class ManagedTask:
         self.is_ephemeral = is_ephemeral
         self.is_test = is_test
         self.last_executions: List[TaskResult] = list()
+        self.environment = EnvironmentImpl(self._store, self.name)
         self.is_activated = False
         self.cron_expression: CronExpression = CronExpression(self.cron)
         self.last_cron_attempt_at: datetime = None
@@ -186,6 +189,8 @@ class ManagedTask:
             self._namespace = {
                 "__name__": f"task_{self.name}",
                 "Store": Store,
+                "EventLog": EventLog,
+                "Environment": Environment,
                 "BackgroundTask": BackgroundTask,
                 "AdhocTask": AdhocTask,
             }
@@ -247,7 +252,7 @@ class ManagedTask:
             _WrappedTask.__name__ = f"Wrapped{user_class.__name__}"
             _WrappedTask.__qualname__ = _WrappedTask.__name__
 
-            return _WrappedTask(self._scoped_store)
+            return _WrappedTask(self.environment)
 
         except SyntaxError as e:
             self._log_syntax_error(e)
@@ -574,7 +579,7 @@ class ManagedTaskFactory:
         }
 
         return ManagedTask(
-            ScopedStore(self._store, name),
+            self._store,
             name,
             is_ephemeral,
             is_test,
@@ -592,7 +597,7 @@ class ManagedTaskFactory:
                 props: Dict[str, Any]) -> ManagedTask:
         """Re-create a previously persisted :class:`ManagedTask` from raw props."""
         return ManagedTask(
-            ScopedStore(self._store, name),
+            self._store,
             name,
             is_ephemeral,
             is_test,

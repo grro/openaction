@@ -5,6 +5,10 @@ from zoneinfo import ZoneInfo
 from astral import LocationInfo
 from astral.sun import sun
 
+# Assuming these are available from your API package
+from api.environment import Environment
+from api.task import BackgroundTask
+
 SHUTTER_URL = "http://192.168.1.99:8320/0/properties/position"
 TZ = ZoneInfo("Europe/Berlin")
 LOCATION = LocationInfo("Neustadt", "DE", "Europe/Berlin", 49.3508, 8.1395)
@@ -18,7 +22,6 @@ K_EXPECTED = "expected_position"
 K_LAST_EVENT = "last_auto_event"
 K_OVERRIDE = "override_until_event"
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -26,13 +29,11 @@ class OfficeShutterSunAutomation(BackgroundTask):
     """
     Automates office shutters based on solar times (sunrise/sunset) with
     clamping logic and manual override detection.
-
-    Store contract: ScopedStore only exposes put/get/delete/keys with str values.
-    All numeric state is serialized as str and parsed via _get_int().
     """
 
-    def __init__(self, store):
-        super().__init__(store)
+    def __init__(self, environment: Environment):
+        # Pass the unified environment object to the base class
+        super().__init__(environment)
         self._client = None
 
     def on_activate(self):
@@ -50,7 +51,8 @@ class OfficeShutterSunAutomation(BackgroundTask):
             self._client = httpx.Client(timeout=4.0)
 
     def _get_int(self, key):
-        raw = self.store.get(key)
+        # Updated to use self.environment.store
+        raw = self.environment.store.get(key)
         if raw is None:
             return None
         try:
@@ -71,15 +73,19 @@ class OfficeShutterSunAutomation(BackgroundTask):
             return f"Sensor Error: {e}"
 
         expected = self._get_int(K_EXPECTED)
-        override_slot = self.store.get(K_OVERRIDE)
+        override_slot = self.environment.store.get(K_OVERRIDE)
 
         # Manual override detection
         if expected is not None and abs(actual - expected) > TOLERANCE:
             next_slot = self._get_next_slot_id(now, open_dt, close_dt, today)
             if override_slot != next_slot:
-                self.store.put(K_OVERRIDE, next_slot)
-                self.store.put(K_EXPECTED, str(actual))
-                return f"Manual move detected ({actual}%). Overriding until {next_slot}."
+                self.environment.store.put(K_OVERRIDE, next_slot)
+                self.environment.store.put(K_EXPECTED, str(actual))
+
+                msg = f"Manual move detected ({actual}%). Overriding until {next_slot}."
+                # Log critical system events to the new eventlog
+                self.environment.eventlog.log_event("Shutter Override", msg)
+                return msg
 
         due = self._get_due_event(now, open_dt, close_dt, today)
         if not due:
@@ -87,13 +93,13 @@ class OfficeShutterSunAutomation(BackgroundTask):
 
         slot_id, target_pos, label = due
 
-        if self.store.get(K_LAST_EVENT) == slot_id:
+        if self.environment.store.get(K_LAST_EVENT) == slot_id:
             return f"Slot {slot_id} already handled."
 
         if override_slot == slot_id:
-            self.store.delete(K_OVERRIDE)
-            self.store.put(K_LAST_EVENT, slot_id)
-            self.store.put(K_EXPECTED, str(actual))
+            self.environment.store.delete(K_OVERRIDE)
+            self.environment.store.put(K_LAST_EVENT, slot_id)
+            self.environment.store.put(K_EXPECTED, str(actual))
             return f"Override expired at {slot_id}. Resuming auto next cycle."
 
         if override_slot:
@@ -101,9 +107,13 @@ class OfficeShutterSunAutomation(BackgroundTask):
 
         try:
             self._set_position(target_pos)
-            self.store.put(K_EXPECTED, str(target_pos))
-            self.store.put(K_LAST_EVENT, slot_id)
-            return f"Success: Moved to {label} ({target_pos}%)"
+            self.environment.store.put(K_EXPECTED, str(target_pos))
+            self.environment.store.put(K_LAST_EVENT, slot_id)
+
+            msg = f"Success: Moved to {label} ({target_pos}%)"
+            # Log successful automated actions
+            self.environment.eventlog.log_event("Shutter Automation", msg)
+            return msg
         except Exception as e:
             return f"Movement failed: {e}"
 

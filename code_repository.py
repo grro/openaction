@@ -4,193 +4,61 @@ import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
-
+from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-# Regex of allowed characters in a unit (task) name: word characters
-# (letters, digits, underscore) and hyphen. Anything else is rejected
-# to keep names safe for use as directory and file names across
-# platforms.
-_VALID_NAME_PATTERN = re.compile(r"^[\w\-]+$")
+# Allowed characters for a unit name: letters, digits, underscore and dash.
+_NAME_PATTERN = re.compile(r"^[\w\-]+$")
 
 
 class Image:
     """
-    On-disk representation of a single unit (typically a task).
+    On-disk representation of a single "unit" (e.g. a task) inside a
+    :class:`CodeRepository`.
 
-    An ``Image`` owns a directory ``<codedir>/<unit_name>/`` containing
-    three sibling files:
+    An image is stored as a dedicated directory ``<codedir>/<unit_name>/``
+    containing three sibling files:
 
-      * ``<unit_name>.py``    -- the unit's Python source code,
-      * ``<unit_name>.props`` -- a JSON document with arbitrary properties,
-      * ``<unit_name>.desc``  -- a free-form text description.
+      * ``<unit_name>.py``    — the source code
+      * ``<unit_name>.props`` — a JSON-encoded property dict
+      * ``<unit_name>.desc``  — a free-form text description
 
-    Images can be created with a temporary, randomly generated name via
-    :meth:`new` and later renamed to their final name via :meth:`rename`.
-    This two-step pattern allows the caller to populate an image
-    atomically and only "publish" it (by renaming) once it is fully
-    written.
-
-    Instances are cheap to construct and do **not** load any file
-    content eagerly; use :meth:`read` to fetch the contents and
-    :meth:`write_data` to persist them.
+    Instances are cheap; the constructor only validates the name and
+    ensures the backing directory exists on disk.
     """
 
-    TEMP_PREFIX = 'temp_'
+    # Prefix used for newly created, not-yet-named images.
+    TEMP_PREFIX = "temp_"
 
     def __init__(self, codedir: Path, unit_name: str):
         """
         Args:
-            codedir: Root directory under which all images live. Created
-                automatically if it does not yet exist.
-            unit_name: Name of the unit. Must match
-                :data:`_VALID_NAME_PATTERN` (alphanumeric plus ``_`` and
-                ``-``); otherwise a :class:`ValueError` is raised.
+            codedir:   Root directory of the owning :class:`CodeRepository`.
+            unit_name: Name of this image. Must match ``[A-Za-z0-9_-]+``.
 
-        Side effects:
-            The image directory ``<codedir>/<unit_name>/`` is created on
-            disk if it does not yet exist.
+        Raises:
+            ValueError: If ``unit_name`` is empty or contains illegal chars.
         """
-        if not unit_name or not _VALID_NAME_PATTERN.match(unit_name):
-            raise ValueError("Task name must be alphanumeric (with _ or - allowed)")
+        if not unit_name or not _NAME_PATTERN.match(unit_name):
+            raise ValueError(
+                f"Invalid unit name '{unit_name}'. "
+                "Must be alphanumeric (underscores and dashes allowed)."
+            )
 
-        self.codedir = codedir
+        self.codedir = Path(codedir)
         self.unit_name = unit_name
 
-        codedir.mkdir(parents=True, exist_ok=True)
+        self.codedir.mkdir(parents=True, exist_ok=True)
         self.unit_path.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # Construction helpers
-    # ------------------------------------------------------------------
+    # ----- Construction helpers ------------------------------------------------
 
     @staticmethod
-    def new(codedir: Path) -> 'Image':
-        """
-        Create a new image with a temporary, random unit name.
-
-        Use this together with :meth:`rename` to atomically publish a
-        freshly written image under its final name.
-        """
-        return Image(codedir, Image.TEMP_PREFIX + str(uuid.uuid4()))
-
-    def is_temp(self) -> bool:
-        """``True`` if this image still carries the temporary prefix."""
-        return self.unit_name.startswith(Image.TEMP_PREFIX)
-
-    # ------------------------------------------------------------------
-    # Path helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def unit_path(self) -> Path:
-        """Absolute path of the directory that holds this image's files."""
-        return Path(self.codedir) / self.unit_name
-
-    def _get_paths(self) -> tuple[Path, Path, Path]:
-        """Return the ``(code, props, desc)`` file paths for this image."""
-        return (
-            self.unit_path / f"{self.unit_name}.py",
-            self.unit_path / f"{self.unit_name}.props",
-            self.unit_path / f"{self.unit_name}.desc",
-        )
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def delete(self) -> None:
-        """Recursively delete the image directory and all its files."""
-        dir_path = self.unit_path
-        if dir_path.exists() and dir_path.is_dir():
-            shutil.rmtree(dir_path)
-            logger.info(f"Deleted image directory: {dir_path}")
-        else:
-            logger.warning(f"Image directory {dir_path} does not exist or is not a directory.")
-
-    def rename(self, new_name: str) -> 'Image':
-        """
-        Rename the image directory to ``new_name``.
-
-        If a directory with ``new_name`` already exists, it is replaced
-        atomically: the current directory is parked under a temporary
-        name, the existing target is moved into the parking slot, the
-        current directory takes the target's place, and the old content
-        is finally deleted. This keeps a valid image under ``new_name``
-        visible at every point in time.
-
-        Returns:
-            ``self``, with :attr:`unit_name` updated.
-        """
-        old_path = Path(self.codedir) / f"{self.unit_name}"
-        new_path = Path(self.codedir) / f"{new_name}"
-
-        if old_path.exists():
-            if new_path.exists():
-                # Atomic swap: park old, move existing target to parking
-                # slot, promote our directory to the target, then drop
-                # the parked (now stale) content.
-                temp_path = Path(self.codedir) / (Image.TEMP_PREFIX + self.unit_name)
-                old_path.rename(temp_path)
-                new_path.rename(old_path)
-                temp_path.rename(new_path)
-                shutil.rmtree(old_path)
-                logger.info(f"Replaced existing directory: {new_path} was updated and previous content deleted.")
-            else:
-                old_path.rename(new_path)
-                logger.info(f"Renamed image directory from {old_path} to {new_path}")
-        else:
-            logger.warning(f"Image directory {old_path} does not exist and cannot be renamed.")
-
-        self.unit_name = new_name
-        return self
-
-    # ------------------------------------------------------------------
-    # I/O
-    # ------------------------------------------------------------------
-
-    def write_data(self, code: str, desc: str, props: Dict[str, Any]) -> None:
-        """
-        Persist the unit's code, description and properties to disk.
-
-        Existing files with the same names are overwritten in place.
-        """
-        code_file, props_file, desc_file = self._get_paths()
-        code_file.write_text(code, encoding="utf-8")
-        props_file.write_text(json.dumps(props, indent=2), encoding="utf-8")
-        desc_file.write_text(desc, encoding="utf-8")
-
-    def read(self) -> tuple[str, str, dict[str, Any]]:
-        """
-        Load the unit's code, description and properties from disk.
-
-        Missing or malformed ``.props`` files are tolerated and produce
-        an empty dict; a missing ``.desc`` file produces an empty
-        string. The code file is required and a missing/unreadable code
-        file will raise the underlying :class:`OSError`.
-
-        Returns:
-            A tuple ``(code, description, properties)``.
-        """
-        code_file, props_file, desc_file = self._get_paths()
-
-        task_code = code_file.read_text(encoding="utf-8")
-
-        try:
-            props = json.loads(props_file.read_text(encoding="utf-8")) if props_file.exists() else {}
-        except json.JSONDecodeError:
-            props = {}
-
-        desc = desc_file.read_text(encoding="utf-8") if desc_file.exists() else ""
-
-        return task_code, desc, props
-
-    # ------------------------------------------------------------------
-    # Dunder helpers
-    # ------------------------------------------------------------------
+    def new(codedir: Path) -> "Image":
+        """Create a fresh image with a temporary, unique name."""
+        return Image(codedir, Image.TEMP_PREFIX + uuid.uuid4().hex)
 
     def __str__(self) -> str:
         return self.unit_name
@@ -198,68 +66,190 @@ class Image:
     def __repr__(self) -> str:
         return f"Image(name='{self.unit_name}')"
 
+    # ----- Lifecycle -----------------------------------------------------------
+
+    def is_temp(self) -> bool:
+        """True if this image still carries the auto-generated temp name."""
+        return self.unit_name.startswith(Image.TEMP_PREFIX)
+
+    def delete(self) -> None:
+        """Remove the image directory and all of its contents."""
+        dir_path = self.unit_path
+        if dir_path.exists() and dir_path.is_dir():
+            shutil.rmtree(dir_path)
+            logger.info(f"Deleted image directory: {dir_path}")
+        else:
+            logger.warning(
+                f"Image directory {dir_path} does not exist or is not a directory."
+            )
+
+    def rename(self, new_name: str) -> "Image":
+        """
+        Rename the on-disk directory backing this image.
+
+        If a directory with ``new_name`` already exists, it is atomically
+        replaced by the current image's content (the previously stored
+        directory is deleted).
+
+        Args:
+            new_name: New unit name. Must satisfy the same naming rules
+                as the constructor.
+
+        Returns:
+            ``self`` (for fluent chaining).
+
+        Raises:
+            ValueError: If ``new_name`` is invalid.
+        """
+        if not new_name or not _NAME_PATTERN.match(new_name):
+            raise ValueError(
+                f"Invalid target name '{new_name}'. "
+                "Must be alphanumeric (underscores and dashes allowed)."
+            )
+
+        old_path = self.codedir / self.unit_name
+        new_path = self.codedir / new_name
+
+        if not old_path.exists():
+            logger.warning(
+                f"Image directory {old_path} does not exist and cannot be renamed."
+            )
+            self.unit_name = new_name
+            return self
+
+        if new_path.exists():
+            # Atomic-ish swap: old -> tmp, new -> old (so the previous
+            # tenant of new_path is now under old_path), tmp -> new.
+            # Finally delete the old (= replaced) content.
+            temp_path = self.codedir / (Image.TEMP_PREFIX + self.unit_name)
+            old_path.rename(temp_path)
+            new_path.rename(old_path)
+            temp_path.rename(new_path)
+            shutil.rmtree(old_path)
+            logger.info(
+                f"Replaced existing directory: {new_path} was updated "
+                "and previous content deleted."
+            )
+        else:
+            old_path.rename(new_path)
+            logger.info(f"Renamed image directory from {old_path} to {new_path}")
+
+        self.unit_name = new_name
+        return self
+
+    # ----- Paths ---------------------------------------------------------------
+
+    @property
+    def unit_path(self) -> Path:
+        """Absolute path to this image's backing directory."""
+        return self.codedir / self.unit_name
+
+    def _get_paths(self) -> Tuple[Path, Path, Path]:
+        """Return the ``(code, props, desc)`` file paths for this image."""
+        return (
+            self.unit_path / f"{self.unit_name}.py",
+            self.unit_path / f"{self.unit_name}.props",
+            self.unit_path / f"{self.unit_name}.desc",
+        )
+
+    # ----- I/O -----------------------------------------------------------------
+
+    def write_data(self, code: str, desc: str, props: Dict[str, Any]) -> None:
+        """Persist code, description and properties to disk (overwriting)."""
+        code_file, props_file, desc_file = self._get_paths()
+        code_file.write_text(code, encoding="utf-8")
+        props_file.write_text(json.dumps(props, indent=2), encoding="utf-8")
+        desc_file.write_text(desc, encoding="utf-8")
+
+    def read(self) -> Tuple[str, str, Dict[str, Any]]:
+        """
+        Read code, description and properties from disk.
+
+        Missing ``.props`` / ``.desc`` files are tolerated and yield
+        ``{}`` / ``""`` respectively; a missing or unreadable ``.py``
+        file raises the underlying :class:`OSError`.
+        """
+        code_file, props_file, desc_file = self._get_paths()
+
+        task_code = code_file.read_text(encoding="utf-8")
+
+        props: Dict[str, Any] = {}
+        if props_file.exists():
+            try:
+                props = json.loads(props_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                logger.warning(f"Invalid JSON in {props_file}: {e}. Using empty props.")
+
+        desc = desc_file.read_text(encoding="utf-8") if desc_file.exists() else ""
+
+        return task_code, desc, props
+
 
 class CodeRepository:
     """
-    Filesystem-backed collection of :class:`Image` objects.
+    Filesystem-backed collection of :class:`Image` objects, one directory
+    per image, rooted at a single ``codedir``.
 
-    The repository owns a single root directory (``codedir``) under
-    which every image lives in its own subdirectory. It is purely a
-    thin lookup/factory layer: it does not cache image content and
-    every call hits the filesystem.
+    The repository is intentionally stateless: every public method
+    inspects the filesystem on demand, so multiple processes / instances
+    can share the same ``codedir`` safely as long as they don't race on
+    the same image name.
     """
 
     def __init__(self, codedir: str | Path):
         """
         Args:
-            codedir: Root directory for all images. Created if missing.
+            codedir: Root directory under which all images live. Created
+                automatically if it doesn't yet exist.
         """
         self._codedir = Path(codedir)
         self._codedir.mkdir(parents=True, exist_ok=True)
 
     def create_image(self, name: str) -> Image:
         """
-        Create a fresh image and publish it under ``name``.
+        Create a brand-new image and rename it to ``name``.
 
-        Internally creates a temp-named image first and renames it, so
-        partial state is never visible under the final name.
+        If an image with that name already exists, it is atomically
+        replaced (see :meth:`Image.rename`).
         """
         return Image.new(self._codedir).rename(name)
 
     def get_image(self, name: str) -> Image:
-        """Return an :class:`Image` handle for ``name`` (does not check existence)."""
+        """Return the image with the given name (creating the dir if absent)."""
         return Image(self._codedir, name)
 
     def delete_image(self, name: str) -> None:
-        """Delete the image directory for ``name`` if it exists."""
-        image = self.get_image(name)
-        if image:
-            image.delete()
+        """Delete the image with the given name if it exists."""
+        path = self._codedir / name
+        if path.exists() and path.is_dir():
+            shutil.rmtree(path)
+            logger.info(f"Deleted image directory: {path}")
+        else:
+            logger.warning(f"Cannot delete image '{name}': directory not found.")
 
     def list_images(self, incl_temp: bool = False) -> List[Image]:
         """
-        List every image currently stored in the repository.
+        List all images currently stored in the repository.
 
         Args:
-            incl_temp: When ``False`` (the default), images whose name
-                still carries the temporary prefix are skipped. Set to
-                ``True`` to also receive in-flight / orphaned temp
-                images, e.g. for cleanup tasks.
-
-        Notes:
-            * Hidden directories (those starting with ``_``) are always
-              ignored.
-            * Files at the top level of ``codedir`` are ignored; only
-              subdirectories are treated as images.
+            incl_temp: If ``False`` (default), temporary images are filtered out.
+                Directories whose name starts
+                with ``_`` are always skipped (treated as hidden).
         """
         if not self._codedir.exists() or not self._codedir.is_dir():
             return []
 
         images: List[Image] = []
         for entry in self._codedir.iterdir():
-            if entry.is_dir() and not entry.name.startswith("_"):
+            if not entry.is_dir() or entry.name.startswith("_"):
+                continue
+            try:
                 img = self.get_image(entry.name)
-                if not incl_temp and img.is_temp():
-                    continue
-                images.append(img)
+            except ValueError:
+                # Skip directories whose name doesn't pass Image's validation.
+                logger.debug(f"Skipping invalid image directory: {entry.name}")
+                continue
+            if not incl_temp and img.is_temp():
+                continue
+            images.append(img)
         return images

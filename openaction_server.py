@@ -379,7 +379,22 @@ class OpenActionServer(McpServer):
                             lines.append(f"  - `Output:\n    {indented_out}`")
                     lines.append("")
 
-                # 4. Persistent Store Data Section (Only if applicable/available)
+                # 4. Important Events Section
+                try:
+                    if hasattr(task, 'environment') and hasattr(task.environment, 'eventlog'):
+                        events = task.environment.eventlog.events()
+                        lines.append("### 📌 Important Events")
+                        if not events:
+                            lines.append("- *No recent events logged.*")
+                        else:
+                            for event in events[:10]: # Limit to top 10 most recent to avoid bloating context
+                                ts = event.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                                lines.append(f"- **{ts}** | `{event.topic}`: {event.text}")
+                        lines.append("")
+                except Exception as e:
+                    lines.append(f"### 📌 Important Events\n- *Error retrieving events: {e}*\n")
+
+                # 5. Persistent Store Data Section (Only if applicable/available)
                 if hasattr(task, 'data'):
                     lines.append("### 💾 Persistent Store Data")
                     try:
@@ -396,7 +411,7 @@ class OpenActionServer(McpServer):
                         lines.append(f"- *Error retrieving store data: {e}*")
                     lines.append("")
 
-                # 5. Source Code Section
+                # 6. Source Code Section
                 code = getattr(task, 'code', '# No source code available.').strip()
                 lines.append("### 📝 Source Code")
                 lines.append(f"```python\n{code}\n```")
@@ -406,7 +421,6 @@ class OpenActionServer(McpServer):
             except Exception as e:
                 logger.error(f"Failed to retrieve task '{name}': {e}", exc_info=True)
                 return f"Error: Internal server error while retrieving task details: {type(e).__name__} - {str(e)}"
-
 
 
         @self.mcp.tool()

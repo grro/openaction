@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import threading
@@ -6,6 +5,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastmcp import Client
 
+# Assuming these are available from your API package
+from api.environment import Environment
+from api.task import BackgroundTask
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +47,8 @@ class OfficeShutterSchedule(BackgroundTask):
       for observability.
     """
 
-    def __init__(self, store: "Store") -> None:
-        super().__init__(store)
+    def __init__(self, environment: Environment) -> None:
+        super().__init__(environment)
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: Client | None = None
@@ -144,10 +146,10 @@ class OfficeShutterSchedule(BackgroundTask):
     # --- State helpers ------------------------------------------------------
 
     def _set_state(self, state: str) -> None:
-        self.store.put(K_STATE, state)
+        self.environment.store.put(K_STATE, state)
 
     def _mcp_state_cached(self) -> str:
-        return self.store.get(K_STATE) or "unknown"
+        return self.environment.store.get(K_STATE) or "unknown"
 
     def _resolve_action(self, now: datetime):
         hour = now.hour
@@ -168,7 +170,7 @@ class OfficeShutterSchedule(BackgroundTask):
 
         slot_id, target, label = action
 
-        if self.store.get(K_LAST_SLOT) == slot_id:
+        if self.environment.store.get(K_LAST_SLOT) == slot_id:
             return f"Slot {slot_id} already executed; skipping."
 
         try:
@@ -177,7 +179,7 @@ class OfficeShutterSchedule(BackgroundTask):
             logger.exception("office shutter %s failed", label)
             return f"Failed to {label} office shutter: {type(e).__name__}: {e}"
 
-        self.store.put(K_LAST_SLOT, slot_id)
+        self.environment.store.put(K_LAST_SLOT, slot_id)
         return (
             f"Office shutter -> {label} (position={target}) "
             f"at {now.isoformat(timespec='seconds')}. MCP: {response}"
