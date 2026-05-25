@@ -10,11 +10,15 @@ from code_repository import CodeRepository
 from simple_store import SimpleStore
 from managed_task import ManagedTask, ManagedTaskFactory
 
+
 logger = logging.getLogger(__name__)
 
 
 # Characters that are forbidden in task names (filesystem- and URL-unsafe).
 _FORBIDDEN_NAME_CHARS = (',', '.', ' ', '/', '\\', ':', '*', '?', '"', '<', '>', '|')
+
+DAY_PATTERN = '%Y%m%d'
+BACKUP_KEY = "__system_latest_backup"
 
 
 
@@ -226,20 +230,20 @@ class ManagedTaskRepository:
                 self.deregister(task.name, reason="TTL expired")
 
     def _perform_autobackup(self) -> None:
-        latest_backup = datetime.strptime(self._store.get("__system_latest_backup", "1970-01-01"), "%Y-%m-%d")
-        if datetime.now() > (latest_backup + timedelta(hours=7)):
-            filepath = self._code_repository.backup(f"backup_{datetime.now().strftime('%Y%m%d')}.zip")
-            self._store.put("__system_latest_backup", datetime.now().strftime("%Y-%m-%d"))
-
+        current_day_key = datetime.now().strftime(DAY_PATTERN)
+        latest_backup_day_key = self._store.get(BACKUP_KEY, "?")
+        if current_day_key != latest_backup_day_key:
+            filepath = self._code_repository.backup(f"backup_{current_day_key}.zip")
+            self._store.put(BACKUP_KEY, current_day_key)
             self._process_monthly_backup(filepath)
             self._cleanup_old_daily_backups()
 
     def _process_monthly_backup(self, backup_p: Path) -> None:
         current_month_str = datetime.now().strftime("%Y%m")
-        monthly_p = backup_p.parent / f"backup_monthly_{current_month_str}.zip"
+        monthly_p = backup_p.parent / f"backup_{current_month_str}.zip"
 
         if not monthly_p.exists():
-            temp_p = backup_p.parent / f"backup_monthly_tmp_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
+            temp_p = backup_p.parent / f"backup_tmp_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
             try:
                 shutil.copy(backup_p, temp_p)
                 temp_p.replace(monthly_p)
@@ -261,7 +265,7 @@ class ManagedTaskRepository:
             name_part = p.stem.replace("backup_", "")
             try:
                 # Attempt to parse names like "backup_20260525"
-                dt = datetime.strptime(name_part.split("_")[0], "%Y%m%d")
+                dt = datetime.strptime(name_part.split("_")[0], DAY_PATTERN)
             except ValueError:
                 continue
 
