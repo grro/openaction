@@ -15,16 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 
-# How long the mDNS browser is allowed to collect responses per scan cycle.
-SCAN_TIMEOUT_SECONDS = 2.0
-
-# Delay between two consecutive scan cycles.
-SCAN_INTERVAL_SECONDS = 60
-
-# Services that have not been seen within this window are considered stale
-# and removed from the registry on the next clean-up pass.
-DEFAULT_SERVICE_TTL_DAYS = 15
-
 # Key under which the serialized service registry is stored in SimpleStore.
 _STORE_KEY = "services"
 
@@ -60,8 +50,7 @@ class MDNSRegistry:
     from the supplied :class:`SimpleStore`. After :meth:`start`, a daemon
     thread re-scans the local network every ``SCAN_INTERVAL_SECONDS``
     seconds, refreshes the in-memory registry, persists it back to the
-    store and evicts services that have not been seen for
-    ``DEFAULT_SERVICE_TTL_DAYS`` days.
+    store and evicts services that have not been seen for x days.
     """
 
     def __init__(self, store: SimpleStore, own_service_name: str = ""):
@@ -117,15 +106,15 @@ class MDNSRegistry:
         """Repeated scan / persist / cleanup cycle, interruptible via stop()."""
         while self._is_running:
             try:
-                discovered = self._scan(timeout_seconds=SCAN_TIMEOUT_SECONDS)
+                discovered = self._scan(timeout_seconds=2.0)
                 self._services.update(discovered)
                 self._persist()
-                self._clean_up()
+                self._clean_up(time_out_days=8)
             except Exception as e:
                 logger.warning(f"Error in MDNSServiceRegistry loop: {e}")
 
             # `wait()` returns True iff stop() was called.
-            if self._stop_event.wait(timeout=SCAN_INTERVAL_SECONDS):
+            if self._stop_event.wait(timeout=60):
                 break
 
     def _persist(self) -> None:
@@ -133,7 +122,7 @@ class MDNSRegistry:
         srvs = {service.name: service.to_dict() for service in self._services.values()}
         self._store.put(_STORE_KEY, json.dumps(srvs))
 
-    def _clean_up(self, time_out_days: int = DEFAULT_SERVICE_TTL_DAYS) -> None:
+    def _clean_up(self, time_out_days: int) -> None:
         """Drop services that have not been seen within ``time_out_days`` days."""
         max_age = timedelta(days=time_out_days)
         now = datetime.now()
