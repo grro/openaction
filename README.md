@@ -6,6 +6,8 @@ Move beyond rigid "If-This-Then-That" rules and tedious UI-based configurations.
 OpenAction replaces traditional smart home solutions with flexible, adaptive logic. It helps to translate natural language
 intent into dynamic, executable scripts — giving your smart home the ability to adapt, reason, and act.
 
+For the vision and idea behind OpenAction, please refer to the following article: [From Smart Home to Agentic Home](articles/FromSmartHomeToAgenticHome/FromSmartHomeToAgenticHome.md)
+
 ---
 
 ## Core Features
