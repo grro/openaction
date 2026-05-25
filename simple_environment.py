@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from api.environment import Environment
 from api.eventlog import EventLog
@@ -79,3 +79,6 @@ class EnvironmentImpl(Environment):
 
     def events(self) -> List[Event]:
         return self._eventlog.events()
+
+    def store_items(self) -> Dict[str, str]:
+        return {k: self._store.get(k) for k in self._store.keys()}

@@ -358,11 +358,11 @@ class OpenActionServer(McpServer):
                     ""
                 ]
 
-                # 3. Execution History Section
+                # 3. Task Execution History Section
                 if not task.last_executions:
-                    lines.append("### 🕒 History\n- *Never executed*\n")
+                    lines.append("### 🕒 History\n- *Task never executed*\n")
                 else:
-                    lines.append("### 🕒 Recent Executions (Latest First)")
+                    lines.append("### 🕒 Recent Task Executions (Latest First)")
                     for run in list(reversed(task.last_executions))[:5]:
                         ts = run.date.strftime("%Y-%m-%d %H:%M:%S")
                         status = "✅ OK" if run.error is None else "❌ ERROR"
@@ -398,11 +398,11 @@ class OpenActionServer(McpServer):
                 if hasattr(task, 'data'):
                     lines.append("### 💾 Persistent Store Data")
                     try:
-                        store_data = task.data()
-                        if not store_data:
+                        entries = task.environment.store_items()
+                        if len(entries) ==  0:
                             lines.append("- *No persistent data stored.*")
                         else:
-                            for key, value in sorted(store_data.items()):
+                            for key, value in entries.items():
                                 display_value = str(value)
                                 if len(display_value) > 200:
                                     display_value = display_value[:197] + "..."
