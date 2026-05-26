@@ -19,12 +19,7 @@ from cron_expression import CronExpression
 logger = logging.getLogger(__name__)
 
 
-# Maximum number of past execution results kept in memory per task.
-MAX_EXECUTION_HISTORY = 10
 
-# Polling interval (in seconds) of the background loop. Defines the lowest
-# practical resolution at which cron triggers can fire.
-LOOP_TICK_SECONDS = 4
 
 
 @dataclass
@@ -143,7 +138,6 @@ class ManagedTask:
                 ``"cron"``, ``"run_on_start"``, ``"timeout"``,
                 ``"created_at"`` and ``"valid_to"``.
         """
-        self._store = store
         self.name = name
         self.description = desc
         self.props = props
@@ -151,7 +145,7 @@ class ManagedTask:
         self.is_ephemeral = is_ephemeral
         self.is_test = is_test
         self.last_executions: List[TaskResult] = list()
-        self.environment = EnvironmentImpl(self._store, self.name)
+        self.environment = EnvironmentImpl(store, self.name)
         self.is_activated = False
         self.cron_expression: CronExpression = CronExpression(self.cron)
         self.last_cron_attempt_at: datetime = None
@@ -382,7 +376,7 @@ class ManagedTask:
 
             # `wait` returns early if `deactivate()` sets the event, giving us
             # a responsive shutdown without busy-polling `is_activated`.
-            self._wakeup.wait(timeout=LOOP_TICK_SECONDS)
+            self._wakeup.wait(timeout=4)
 
         try:
             self._task_instance.on_deactivate()
@@ -445,7 +439,7 @@ class ManagedTask:
         finally:
             if task_result is not None:
                 self.last_executions.append(task_result)
-                if len(self.last_executions) > MAX_EXECUTION_HISTORY:
+                if len(self.last_executions) > 10:
                     del self.last_executions[0]
                 logger.info(task_result)
 
@@ -455,12 +449,12 @@ class ManagedTask:
 
     def data(self) -> Dict[str, str]:
         """Return a snapshot of all persistent key/value pairs for this task."""
-        return {key: self._scoped_store.get(key) for key in self._scoped_store.keys()}
+        return {key: self.environment.store.get(key) for key in self.environment.store.keys()}
 
     def reset(self) -> None:
         """Delete every persistent entry owned by this task."""
-        for key in self._scoped_store.keys():
-            self._scoped_store.delete(key)
+        for key in self.environment.store.keys():
+            self.environment.store.delete(key)
 
     # ------------------------------------------------------------------
     # Read-only properties derived from the task's configuration / state

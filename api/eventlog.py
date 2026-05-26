@@ -9,17 +9,17 @@ class EventLog(ABC):
     (e.g., a roller shutter changing position, or a heater being switched on/off).
     To maintain a high signal-to-noise ratio, the volume of logged events should typically
     not exceed 30 per day. Log entries are automatically purged after a specified retention
-    period (default: 48 hours).
+    period (default: 14 days).
     """
 
     @abstractmethod
-    def log_event(self, topic: str, text: str, ttl: int = 48 * 60 * 60) -> None:
+    def log_event(self, topic: str, text: str, ttl: int = 14 * 24 * 60 * 60) -> None:
         """
         Records an important event to the daily log.
 
         Args:
             topic (str): The category or subject of the event (e.g., "Security", "System").
             text (str): A descriptive message detailing the occurrence.
-            ttl (int, optional): Time-to-live in seconds. Defaults to 172800 (48 hours).
+            ttl (int, optional): Time-to-live in seconds. Defaults to 1209600 (14 days).
         """
         pass
