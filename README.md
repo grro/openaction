@@ -36,7 +36,7 @@ The workflow is as follows:
 
 
 ### 1. Running via Docker
-You can also run OpenAction as a Docker container. Use host networking to allow the server to easily discover and communicate with local network devices. Mount a local directory to preserve the working state (scripts and store data) across container restarts.
+You can run OpenAction as a Docker container. Use host networking to allow the server to easily discover and communicate with local network devices. Mount a local directory to preserve the working state (scripts and store data) across container restarts.
 
 ```bash
 sudo docker run -d --name openaction --restart always --log-driver local --log-opt max-size=10m --log-opt max-file=3 --network host -v /etc/script/openaction:/etc/work -e devices='' grro/openaction:0.0.30
@@ -50,5 +50,24 @@ You can test the server capabilities and available tools of the running Docker c
 npx @modelcontextprotocol/inspector sse http://localhost:8080/sse
 ```
 Once started, open the provided localhost URL (e.g., `http://localhost:5173/`) in your browser to inspect the MCP tools and resources.
+
+
+### 3. Integrate into Claude Desktop
+To integrate OpenAction with Claude Desktop, add the MCP Server URL to the "mcpServers" section in the Claude settings. 
+You may use [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to bridge the Streamable HTTP transport and the stdio MCP transport used by Claude Desktop.
+
+```json
+{
+  "mcpServers": {
+    "openaction": {
+      "command": "mcp-proxy",
+      "args": [
+        "http://localhost:8080/sse"
+      ]
+    }
+  }
+}
+```
+
 
 ---
