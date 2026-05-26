@@ -53,7 +53,7 @@ Once started, open the provided localhost URL (e.g., `http://localhost:5173/`) i
 
 
 ### 3. Integrate into Claude Desktop
-To integrate OpenAction with Claude Desktop, add the MCP Server URL to the "mcpServers" section in the Claude settings. 
+To integrate OpenAction with Claude Desktop, add the MCP Server URL to the "mcpServers" section in your `claude_desktop_config.json`. 
 You may use [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to bridge the Streamable HTTP transport and the stdio MCP transport used by Claude Desktop.
 
 ```json
