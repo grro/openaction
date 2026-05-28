@@ -41,15 +41,15 @@ You can run OpenAction as a Docker container. Use host networking to allow the s
 ```bash
 sudo docker run -d --name openaction --restart always --log-driver local --log-opt max-size=10m --log-opt max-file=3 --network host -v /etc/script/openaction:/etc/work -e devices='' grro/openaction:0.0.30
 ```
-*Note: Make sure to map a persistent volume to `/etc/work` so that your environment state and custom scripts are not lost when the container is recreated.*
+
+By default the OpenAction server is running on port `8345`. Make sure to map a persistent volume to `/etc/work` so that your environment state and custom scripts are not lost when the container is recreated.
 
 
 ### 2. Testing with MCP Inspector
 You can test the server capabilities and available tools of the running Docker container using the official MCP Inspector via Server-Sent Events (SSE):
 ```bash
-npx @modelcontextprotocol/inspector sse http://localhost:8080/sse
+npx @modelcontextprotocol/inspector sse http://localhost:8345/sse
 ```
-Once started, open the provided localhost URL (e.g., `http://localhost:5173/`) in your browser to inspect the MCP tools and resources.
 
 
 ### 3. Integrate into an Agent
@@ -65,7 +65,7 @@ You may use [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to bridge the S
     "openaction": {
       "command": "mcp-proxy",
       "args": [
-        "http://localhost:8080/sse"
+        "http://localhost:8345/sse"
       ]
     }
   }
