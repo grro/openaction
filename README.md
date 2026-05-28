@@ -85,11 +85,11 @@ Here is an example showing how you can ask Claude to list all available OpenActi
 #### View Registered Tasks
 You can easily inquire about currently registered tasks and their statuses.
 
-<img src="img_2.png" alt="Displaying Registered Tasks" width="70%" />
+<img src="img.png" alt="Creating a New Task" width="70%" />
 
 #### Create a New Task
 Simply instruct Claude to create new automations, and it will handle the underlying code and registration for you.
 
-<img src="img.png" alt="Creating a New Task" width="70%" />
+<img src="img_2.png" alt="Displaying Registered Tasks" width="70%" />
 
 ---
