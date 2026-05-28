@@ -69,5 +69,24 @@ You may use [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to bridge the S
 }
 ```
 
+### 4. Use Claude Desktop
+After setting up the MCP Server and integrating it with Claude Desktop, you can start describing your desired automations in natural language. 
+The Agent will be able to generate and modify the task scripts and manage their execution based on your defined triggers.
+
+
+#### Explore OpenAction Tools
+Here is an example showing how you can ask Claude to list all available OpenAction tools.
+
+<img src="img_1.png" alt="Listing OpenAction Tools" width="40%" />
+
+#### View Registered Tasks
+You can easily inquire about currently registered tasks and their statuses.
+
+<img src="img_2.png" alt="Displaying Registered Tasks" width="40%" />
+
+#### Create a New Task
+Simply instruct Claude to create new automations, and it will handle the underlying code and registration for you.
+
+<img src="img.png" alt="Creating a New Task" width="40%" />
 
 ---
