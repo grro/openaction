@@ -52,7 +52,10 @@ npx @modelcontextprotocol/inspector sse http://localhost:8080/sse
 Once started, open the provided localhost URL (e.g., `http://localhost:5173/`) in your browser to inspect the MCP tools and resources.
 
 
-### 3. Integrate into Claude Desktop
+### 3. Integrate into an Agent
+OpenAction works with any agent that supports MCP.
+
+#### 3.1 Claude Desktop example
 To integrate OpenAction with Claude Desktop, add the MCP Server URL to the "mcpServers" section in your `claude_desktop_config.json`. 
 You may use [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to bridge the Streamable HTTP transport and the stdio MCP transport used by Claude Desktop.
 
@@ -69,25 +72,24 @@ You may use [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to bridge the S
 }
 ```
 
-### 4. Use Claude Desktop
+##### Use Claude Desktop
 After setting up the MCP Server and integrating it with Claude Desktop, you can start describing your desired automations in natural language. 
 The Agent will be able to generate and modify the task scripts and manage their execution based on your defined triggers.
 
 
-#### Explore OpenAction Tools
+##### Explore OpenAction Tools
 Here is an example showing how you can ask Claude to list all available OpenAction tools.
 
 <img src="img_1.png" alt="Listing OpenAction Tools" width="70%" />
 
-#### View Registered Tasks
+##### View Registered Tasks
 You can easily inquire about currently registered tasks and their statuses.
 
-<img src="img.png" alt="Creating a New Task" width="70%" />
+<img src="img_2.png" alt="Displaying Registered Tasks" width="70%" />
 
-
-#### Create a New Task
+##### Create a New Task
 Simply instruct Claude to create new automations, and it will handle the underlying code and registration for you.
 
-<img src="img_2.png" alt="Displaying Registered Tasks" width="70%" />
+<img src="img.png" alt="Creating a New Task" width="70%" />
 
 ---
