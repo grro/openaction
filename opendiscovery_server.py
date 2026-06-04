@@ -3,6 +3,8 @@ import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from threading import Thread, Event
+from time import sleep
+
 from service_registry import ServiceRegistry, Service
 from typing import Dict, List, Set, Any
 from zeroconf import Zeroconf, ServiceBrowser, ServiceListener, ZeroconfServiceTypes
@@ -106,8 +108,7 @@ class MDNSRegistry:
         """Repeated scan / persist / cleanup cycle, interruptible via stop()."""
         while self._is_running:
             try:
-                discovered = self._scan(timeout_seconds=2.0)
-                self._services.update(discovered)
+                self._refresh(timeout_seconds=2.0)
                 self._persist()
                 self._clean_up(time_out_days=8)
             except Exception as e:
@@ -128,10 +129,22 @@ class MDNSRegistry:
         now = datetime.now()
         expired = [name for name, svc in self._services.items() if (now - svc.last_seen) > max_age]
         for name in expired:
-            logger.info(f"mDNS: Removing expired service '{name}'")
             del self._services[name]
 
-    def _scan(self, timeout_seconds: float) -> Dict[str, MDNSService]:
+    def _refresh(self, timeout_seconds: float):
+        discovered = self.scan(timeout_seconds)
+        for service in discovered.values():
+            if service.name != self._own_service_name:
+                if service.name not in self._services:
+                    if '._FC9F5ED42C8A._tcp.local.' not in service.name: # Nearby Share protocol
+                        self._services[service.name] = service
+                        logger.info(f"mDNS: Discovered '{service.name}' at {service.host}:{service.port}{service.path}")
+        return discovered
+
+
+
+    @staticmethod
+    def scan(timeout_seconds: float) -> Dict[str, MDNSService]:
         """
         Perform one passive mDNS scan and return everything discovered.
 
@@ -141,7 +154,6 @@ class MDNSRegistry:
         :meth:`_clean_up`.
         """
         discovered: Dict[str, MDNSService] = {}
-        own_name = self._own_service_name
 
         class _AnyListener(ServiceListener):
             def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -154,10 +166,6 @@ class MDNSRegistry:
                 pass
 
             def _process(self, zc: Zeroconf, type_: str, name: str) -> None:
-                # Skip our own service if a name filter was configured.
-                if own_name and name == own_name:
-                    return
-
                 info = zc.get_service_info(type_, name)
                 if not info or not info.parsed_addresses() or info.port is None:
                     return
@@ -184,12 +192,7 @@ class MDNSRegistry:
                     browsers.append(ServiceBrowser(zc, service_type, listener))
 
                 # Allow services time to respond, but wake early on shutdown.
-                self._stop_event.wait(timeout=timeout_seconds)
-
-            # Log newly discovered names (not seen in the previous snapshot).
-            for name, svc in discovered.items():
-                if name not in self._services:
-                    logger.info(f"mDNS: Discovered '{name}' at {svc.host}:{svc.port}{svc.path}")
+                sleep(timeout_seconds)
 
             return discovered
 
@@ -265,4 +268,3 @@ class OpenDiscoveryServer(McpServer):
     def stop(self):
         """Stop background registries before tearing down the MCP server."""
         super().stop()
-
