@@ -136,7 +136,7 @@ class MDNSRegistry:
         for service in discovered.values():
             if service.name != self._own_service_name:
                 if service.name not in self._services:
-                    if '._FC9F5ED42C8A._tcp.local.' not in service.name: # Nearby Share protocol
+                    if '._FC9F5ED42C8A._tcp.local.' not in service.name: # ignore Nearby Share protocol
                         self._services[service.name] = service
                         logger.info(f"mDNS: Discovered '{service.name}' at {service.host}:{service.port}{service.path}")
         return discovered

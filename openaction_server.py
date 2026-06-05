@@ -65,7 +65,7 @@ class OpenActionServer(McpServer):
         self.task_factory = ManagedTaskFactory(self.store)
         self.task_repository = ManagedTaskRepository(os.path.join(dir, "tasks"), self.task_factory, self.store)
         self.task_repository.start()
-
+        self.task_repository.backups()
 
 
         @self.mcp.tool()
@@ -535,6 +535,14 @@ class OpenActionServer(McpServer):
                 for b in backup_list:
                     size_kb = b.size / 1024
                     lines.append(f"- **{b.name}** (`{b.type}`) - {size_kb:.1f} KB")
+                    if b.tasks:
+                        for task in b.tasks:
+                            ts = task.last_modified_utc.strftime("%Y-%m-%d %H:%M:%S")
+                            lines.append(
+                                f"  - task: `{task.name}` ({task.size} bytes, modified: {ts} UTC)"
+                            )
+                    else:
+                        lines.append("  - task: *(no task metadata)*")
 
                 return "\n".join(lines)
             except Exception as e:

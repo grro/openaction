@@ -1,14 +1,15 @@
+import json
 import logging
 import threading
 import shutil
 from pathlib import Path
 from datetime import datetime, timedelta
 from threading import Event
-from typing import Dict, Set, List
+from typing import Dict, Set, List, Any
 
 from attr import dataclass
 
-from code_repository import CodeRepository
+from code_repository import CodeRepository, TaskInfo
 from simple_store import SimpleStore
 from managed_task import ManagedTask, ManagedTaskFactory
 
@@ -23,13 +24,13 @@ DAY_PATTERN = '%Y%m%d'
 BACKUP_KEY = "__system_latest_backup"
 
 
-
 @dataclass(frozen=True)
-class Backup():
+class Backup:
     type: str
     name: str
     size: int
     path: Path
+    tasks: List[TaskInfo]
 
 
 class ManagedTaskRepository:
@@ -196,7 +197,7 @@ class ManagedTaskRepository:
 
             if self._autobackup:
                 try:
-                    self._perform_autobackup()
+                    self.perform_backup()
                 except Exception as e:
                     logger.exception(f"Unexpected error during code repository backup: {e}")
 
@@ -239,7 +240,7 @@ class ManagedTaskRepository:
             if task.is_expired():
                 self.deregister(task.name, reason="TTL expired")
 
-    def _perform_autobackup(self) -> None:
+    def perform_backup(self) -> None:
         current_day_key = datetime.now().strftime(DAY_PATTERN)
         latest_backup_day_key = self._store.get(BACKUP_KEY, "?")
         if current_day_key != latest_backup_day_key:
@@ -270,7 +271,7 @@ class ManagedTaskRepository:
     def _cleanup_old_daily_backups(self, max_age_days: int = 14) -> None:
         now = datetime.now()
         backup_files_list = self._code_repository.backupfiles()  # type: ignore
-        for file_str in backup_files_list:
+        for file_str, task_infos in backup_files_list:
             p = Path(file_str)
             name_part = p.stem.replace("backup_", "")
             try:
@@ -290,7 +291,8 @@ class ManagedTaskRepository:
     def backups(self) -> List[Backup]:
         backup_files_list = self._code_repository.backupfiles()
         result = []
-        for file_str in backup_files_list:
+
+        for file_str, task_infos in backup_files_list:
             p = Path(file_str)
             if not p.exists():
                 continue
@@ -304,6 +306,7 @@ class ManagedTaskRepository:
                 b_type = "daily"
             else:
                 b_type = "other"
-            result.append(Backup(type=b_type, name=name, size=size, path=p))
+            result.append(Backup(type=b_type, name=name, size=size, path=p, tasks=task_infos))
         result.sort(key=lambda b: b.name, reverse=True)
+
         return result

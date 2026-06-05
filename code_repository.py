@@ -3,14 +3,38 @@ import logging
 import re
 import shutil
 import uuid
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
 
 # Allowed characters for a unit name: letters, digits, underscore and dash.
 _NAME_PATTERN = re.compile(r"^[\w\-]+$")
+
+
+
+@dataclass(frozen=True)
+class TaskInfo:
+    name: str
+    size: int
+    last_modified_utc: datetime
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            'name': self.name,
+            'size': self.size,
+            'last_modified_utc': self.last_modified_utc.isoformat()
+        }
+
+    @staticmethod
+    def from_json(name: str, data: Dict[str, Any]) -> "TaskInfo":
+        return TaskInfo(name, data['size'], datetime.fromisoformat(data['last_modified_utc']))
+
+
 
 
 class Image:
@@ -257,6 +281,7 @@ class CodeRepository:
 
     def backup(self, backup_filename: str) -> Path:
         archive_file = self._codedir.parent / backup_filename
+        desc_file = archive_file.with_suffix(".desc")
         temp_backup_base = archive_file.parent / f"{archive_file.stem}_tmp_{uuid.uuid4().hex[:8]}"
         temp_archive_path = Path(shutil.make_archive(str(temp_backup_base), "zip", root_dir=self._codedir))
 
@@ -264,12 +289,44 @@ class CodeRepository:
             if archive_file.exists():
                 logger.debug(f"Overwriting existing backup file: {archive_file}")
             temp_archive_path.replace(archive_file)
+
+            # Build metadata from the archive content so callers can show
+            # which tasks are included without extracting the backup.
+            task_infos: Dict[str, Dict[str, Any]] = {}
+            with zipfile.ZipFile(archive_file, "r") as archive:
+                for info in archive.infolist():
+                    if info.is_dir():
+                        continue
+                    parts = [part for part in info.filename.split("/") if part]
+                    if len(parts) != 2:
+                        continue
+                    task_name, file_name = parts
+                    if file_name != f"{task_name}.py":
+                        continue
+                    modified_utc = datetime(*info.date_time, tzinfo=timezone.utc)
+                    task_infos[task_name] = {
+                        "name": task_name,
+                        "size": info.file_size,
+                        "last_modified_utc": modified_utc.isoformat(),
+                    }
+            desc_file.write_text(json.dumps(task_infos, indent=2), encoding="utf-8")
             logger.info(f"Backup completed successfully: {archive_file}")
             return archive_file
         finally:
             if temp_archive_path.exists():
                 temp_archive_path.unlink()
 
-    def backupfiles(self) -> List[str]:
+    def backupfiles(self) -> List[Tuple[str, Optional[List[TaskInfo]]]]:
         backup_files = self._codedir.parent.glob("backup_*.zip")
-        return sorted((str(p) for p in backup_files))
+        backup_files = sorted((str(p) for p in backup_files))
+        result = []
+        for backup_file in backup_files:
+            task_infos: Optional[List[TaskInfo]] = None
+            desc_file = Path(backup_file).with_suffix(".desc")
+            if desc_file.is_file():
+                with open(desc_file, "r", encoding="utf-8") as f:
+                    raw_data: Dict[str, Dict[str, Any]] = json.load(f)
+                task_infos = [TaskInfo.from_json(task_name, task_data) for task_name, task_data in raw_data.items()]
+            result.append((backup_file, task_infos))
+        return result
+
