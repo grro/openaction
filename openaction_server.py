@@ -303,7 +303,7 @@ class OpenActionServer(McpServer):
                 try:
                     if hasattr(task, 'environment') and hasattr(task.environment, 'eventlog'):
                         events = task.environment.eventlog.events()
-                        lines.append("### 📌 Important Events (task log)")
+                        lines.append("### 📌 Important Log Events (task log)")
                         if not events:
                             lines.append("- *No recent events logged.*")
                         else:
