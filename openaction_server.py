@@ -294,7 +294,6 @@ class OpenActionServer(McpServer):
                     f"## {lifecycle_label} {task.name}",
                     f"**Type:** `{type_label}`",
                     f"**Description:** {getattr(task, 'description', 'No description provided.')}",
-                    f"**Current State:** `{getattr(task, 'state', 'UNKNOWN')}`",
                     ""
                 ]
 

@@ -143,6 +143,7 @@ class SimpleStore(Store):
         self._directory.mkdir(parents=True, exist_ok=True)
         return self._directory / f"{self._name}.json.gz"
 
+
     def __len__(self) -> int:
         """
         Return the total number of stored entries, **including expired ones**.
@@ -351,8 +352,13 @@ class ScopedStore(Store):
         """
         self._store = store
         self._scope = scope
+        self._revision = 0
         self._separator = separator
         self._prefix = f"{scope}{separator}"
+
+    @property
+    def revision(self) -> int:
+        return self._revision
 
     @property
     def scope(self) -> str:
@@ -366,6 +372,7 @@ class ScopedStore(Store):
     def put(self, key: str, value: Any, ttl_sec: int | None = None) -> None:
         """See :meth:`SimpleStore.put`; the key is transparently prefixed."""
         self._store.put(self._scoped(key), value, ttl_sec)
+        self._revision = self._revision + 1
 
     def get(self, key: str, default_value: Any = None) -> Any:
         """See :meth:`SimpleStore.get`; the key is transparently prefixed."""
@@ -374,6 +381,7 @@ class ScopedStore(Store):
     def delete(self, key: str) -> None:
         """See :meth:`SimpleStore.delete`; the key is transparently prefixed."""
         self._store.delete(self._scoped(key))
+        self._revision = self._revision + 1
 
     def keys(self) -> list[str]:
         """Return all keys belonging to this scope, with the scope prefix stripped."""

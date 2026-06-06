@@ -59,6 +59,9 @@ class TaskResult:
     def __post_init__(self, task: 'ManagedTask') -> None:
         self.name = task.name
 
+    def is_success(self) -> bool:
+        return self.error is None
+
     def __str__(self) -> str:
         status = "❌ FAILED" if self.error else "✅ SUCCESS"
         elapsed_sec = f"{self.elapsed.total_seconds():.3f}s"
@@ -367,7 +370,6 @@ class ManagedTask:
                 try:
                     if self.cron_expression.should_run(self.last_cron_attempt_at, self.last_cron_failure_at):
                         task_result = self._task_instance.on_execute_fw("cron", list())
-                        print(task_result)
                 except Exception as e:
                     self.last_cron_failure_at = datetime.now()
                     logger.warning(f"Error in cron loop for task '{self.name}': {e}", exc_info=True)
@@ -419,6 +421,7 @@ class ManagedTask:
         INFO level, regardless of success. Exceptions are re-raised after
         being recorded, so callers can react to failures.
         """
+        revision_before = self.environment.revision
         start = datetime.now()
         output_buffer = io.StringIO()
         task_result: Optional[TaskResult] = None
@@ -442,7 +445,8 @@ class ManagedTask:
                 self.last_executions.append(task_result)
                 if len(self.last_executions) > 10:
                     del self.last_executions[0]
-                logger.info(task_result)
+                if not task_result.is_success() or revision_before != self.environment.revision:
+                    logger.info(task_result)
 
     # ------------------------------------------------------------------
     # Persistent state helpers
