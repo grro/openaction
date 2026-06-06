@@ -298,12 +298,38 @@ class OpenActionServer(McpServer):
                     ""
                 ]
 
+                # 3. Last Execution Section
+                lines.append("### ⏱️ Last Execution")
+                executions = getattr(task, 'last_executions', None)
+                if not executions:
+                    lines.append("- *No execution recorded yet.*")
+                else:
+                    last_run = executions[-1]
+                    status = "FAILED" if getattr(last_run, 'error', None) else "SUCCESS"
+                    run_date = getattr(last_run, 'date', None)
+                    trigger = getattr(last_run, 'trigger', 'unknown')
+                    elapsed = getattr(last_run, 'elapsed', None)
 
-                # 3. Important Events Section
+                    if run_date:
+                        lines.append(f"- **Time:** `{run_date.strftime('%Y-%m-%dT%H:%M:%S')}`")
+                    lines.append(f"- **Trigger:** `{trigger}`")
+                    lines.append(f"- **Status:** `{status}`")
+                    if elapsed is not None and hasattr(elapsed, 'total_seconds'):
+                        lines.append(f"- **Duration:** `{elapsed.total_seconds():.3f}s`")
+
+                    detail = getattr(last_run, 'error', None) or getattr(last_run, 'output', None) or getattr(last_run, 'result', None)
+                    if detail:
+                        detail_text = str(detail).strip()
+                        if len(detail_text) > 300:
+                            detail_text = detail_text[:297] + "..."
+                        lines.append(f"- **Detail:** `{detail_text}`")
+                lines.append("")
+
+                # 4. Important Events Section
                 try:
                     if hasattr(task, 'environment') and hasattr(task.environment, 'eventlog'):
                         events = task.environment.eventlog.events()
-                        lines.append("### 📌 Important Log Events (task log)")
+                        lines.append("### 📌 Important events logged (task execution log)")
                         if not events:
                             lines.append("- *No recent events logged.*")
                         else:
@@ -314,7 +340,8 @@ class OpenActionServer(McpServer):
                 except Exception as e:
                     lines.append(f"### 📌 Important Events\n- *Error retrieving events: {e}*\n")
 
-                # 4. Persistent Store Data Section (Only if applicable/available)
+
+                # 5. Persistent Store Data Section (Only if applicable/available)
                 if hasattr(task, 'data'):
                     lines.append("### 💾 Persistent Store Data")
                     try:

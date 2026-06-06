@@ -427,7 +427,8 @@ class ManagedTask:
             with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
                 result = call()
                 elapsed = datetime.now() - start
-                return TaskResult(self, trigger, elapsed,result=result,output=output_buffer.getvalue())
+                task_result = TaskResult(self, trigger, elapsed,result=result,output=output_buffer.getvalue())
+                return task_result
         except Exception as e:
             elapsed = datetime.now() - start
             task_result = TaskResult(
