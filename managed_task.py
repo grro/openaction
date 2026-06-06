@@ -328,6 +328,13 @@ class ManagedTask:
             f"-------------------"
         )
 
+    @property
+    def _last_execution_state(self) -> str:
+        if not self.last_executions:
+            return "?"
+        else:
+            return "success" if self.last_executions[-1].is_success() else "failure"
+
     def activate(self) -> None:
         """
         Start the background loop in a daemon thread.
@@ -422,6 +429,7 @@ class ManagedTask:
         being recorded, so callers can react to failures.
         """
         revision_before = self.environment.revision
+        execution_state_before = self._last_execution_state
         start = datetime.now()
         output_buffer = io.StringIO()
         task_result: Optional[TaskResult] = None
@@ -445,7 +453,7 @@ class ManagedTask:
                 self.last_executions.append(task_result)
                 if len(self.last_executions) > 10:
                     del self.last_executions[0]
-                if not task_result.is_success() or revision_before != self.environment.revision:
+                if not task_result.is_success() or revision_before != self.environment.revision or execution_state_before != self._last_execution_state:
                     logger.info(task_result)
 
     # ------------------------------------------------------------------
