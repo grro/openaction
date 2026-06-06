@@ -18,42 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 
-class ExecutionHistory:
-
-    def __init__(self, limit: int):
-        self.limit = limit
-        self._last_tasks: List[ManagedTask] = []
-
-    def add(self, task: ManagedTask):
-        # 1. Check if a task with this name already exists in the history buffer
-        existing_task = next((t for t in self._last_tasks if t.name == task.name), None)
-
-        if existing_task:
-            # 2. If the name AND the source code are identical (and it's an ephemeral test task),
-            # carry over the previous execution history into the newly instantiated task object!
-            if existing_task.code == task.code:
-                # Prepend the older executions BEFORE the current one
-                task.last_executions = existing_task.last_executions + task.last_executions
-
-            # Regardless of code match: Remove the old entry from the list to prevent duplicates
-            self._remove(task.name)
-
-        # 3. Append the new (or now history-enriched) task to the end of the list
-        self._last_tasks.append(task)
-
-        # 4. Enforce the buffer limit
-        while len(self._last_tasks) > self.limit:
-            del self._last_tasks[0]
-
-    def _remove(self, name: str):
-        self._last_tasks = [task for task in self._last_tasks if task.name != name]
-
-    @property
-    def last_tasks(self) -> List[ManagedTask]:
-        self._last_tasks = [task for task in self._last_tasks if not task.is_expired()]
-        return list(self._last_tasks)
-
-
 
 
 class OpenActionServer(McpServer):
@@ -61,7 +25,6 @@ class OpenActionServer(McpServer):
     def __init__(self, name: str, port: int, dir: str, host: str = "0.0.0.0"):
         super().__init__(name, port, host)
         self.store = SimpleStore(name="state", directory=dir)
-        self.execution_history = ExecutionHistory(15)
         self.task_factory = ManagedTaskFactory(self.store)
         self.task_repository = ManagedTaskRepository(os.path.join(dir, "tasks"), self.task_factory, self.store)
         self.task_repository.start()
@@ -292,26 +255,6 @@ class OpenActionServer(McpServer):
                 output.append("\n") # Spacer
 
 
-                ephemeral_tasks = [task for task in self.execution_history.last_tasks if task.is_ephemeral]
-
-                output.append("### 🫧 Recently Executed Ephemeral Tasks")
-                output.append("==========================================\n")
-
-                if ephemeral_tasks:
-                    # Iterate in reverse to show the most recent test logic at the top
-                    for task in reversed(ephemeral_tasks):
-                        exec_count = len(task.last_executions) if task.last_executions else 0
-
-                        # Determine labels
-                        type_label =  "⚙️ BACKGROUND" if task.is_background_task else "🛠️ ADHOC"
-
-                        # Check if it's explicitly a test task for additional flagging
-                        test_flag = " `[🧪 TEST]`" if task.is_test else ""
-
-                        output.append(f"• **{task.name}**{test_flag} | Executed: `{exec_count}x` | `[{type_label}]`: {task.description}")
-                else:
-                    output.append("*No ephemeral tasks found in the recent execution history.*")
-
                 return "\n".join(output)
 
             except Exception as e:
@@ -335,20 +278,16 @@ class OpenActionServer(McpServer):
             try:
                 # 1. Search Strategy: Repository first, then Execution History
                 task = self.task_repository.tasks.get(name)
-                is_ephemeral = False
-
                 if not task:
-                    # Search history buffer (latest first)
-                    history_tasks = self.execution_history.last_tasks
-                    task = next((t for t in reversed(history_tasks) if t.name == name), None)
-                    is_ephemeral = True
-
-                if not task:
-                    return f"Error: Task '{name}' not found in registered tasks or recent history."
+                    available = ", ".join(sorted(self.task_repository.tasks.keys())) or "(none)"
+                    return f"Error: Task '{name}' not found in registered tasks. Available tasks: {available}."
 
                 # 2. Determine Task Type & Lifecycle Labels
-                is_bg = task.is_background_task if callable(getattr(task, 'is_background_task', None)) else getattr(task, 'is_background_task', False)
+                is_bg_attr = getattr(task, 'is_background_task', False)
+                is_bg = is_bg_attr() if callable(is_bg_attr) else is_bg_attr
                 type_label = "⚙️ BACKGROUND" if is_bg else "🛠️ ADHOC"
+                is_ephemeral_attr = getattr(task, 'is_ephemeral', False)
+                is_ephemeral = is_ephemeral_attr() if callable(is_ephemeral_attr) else is_ephemeral_attr
                 lifecycle_label = "🧪 [EPHEMERAL]" if is_ephemeral else "🛡️ [PERMANENT]"
 
                 lines = [
@@ -359,28 +298,8 @@ class OpenActionServer(McpServer):
                     ""
                 ]
 
-                # 3. Task Execution History Section
-                if not task.last_executions:
-                    lines.append("### 🕒 History\n- *Task never executed*\n")
-                else:
-                    lines.append("### 🕒 Recent Task Executions (Latest First)")
-                    for run in list(reversed(task.last_executions))[:5]:
-                        ts = run.date.strftime("%Y-%m-%dT%H:%M:%S%z")
-                        status = "✅ OK" if run.error is None else "❌ ERROR"
-                        duration = f"{run.elapsed.total_seconds():.2f}s"
-                        trigger = getattr(run, 'trigger', 'unknown')
 
-                        lines.append(f"- **{ts}** | ⚡ `{trigger}` | {status} ({duration})")
-
-                        if run.error:
-                            lines.append(f"  - `Detail: {run.error}`")
-                        elif run.output:
-                            display_out = (run.output[:597] + "...") if len(run.output) > 600 else run.output
-                            indented_out = display_out.replace('\n', '\n    ')
-                            lines.append(f"  - `Output:\n    {indented_out}`")
-                    lines.append("")
-
-                # 4. Important Events Section
+                # 3. Important Events Section
                 try:
                     if hasattr(task, 'environment') and hasattr(task.environment, 'eventlog'):
                         events = task.environment.eventlog.events()
@@ -395,7 +314,7 @@ class OpenActionServer(McpServer):
                 except Exception as e:
                     lines.append(f"### 📌 Important Events\n- *Error retrieving events: {e}*\n")
 
-                # 5. Persistent Store Data Section (Only if applicable/available)
+                # 4. Persistent Store Data Section (Only if applicable/available)
                 if hasattr(task, 'data'):
                     lines.append("### 💾 Persistent Store Data")
                     try:
@@ -447,7 +366,6 @@ class OpenActionServer(McpServer):
                 logger.info(f"Manually triggering task '{name}' with parameters: {params}")
 
                 result = task.execute_manually("manual_trigger_by_name", params)
-                self.execution_history.add(task)
 
                 header_icon = "⚙️"
 
@@ -498,10 +416,6 @@ class OpenActionServer(McpServer):
                 # 2. Run the task (returns a TaskResult object)
                 # Using a standardized trigger name for clear history tracking
                 result = task.execute_manually("manual_ephemeral_execution", [])
-
-                # Update the shared execution history buffer
-                # This allows get_task and manual_execution_history to retrieve it later
-                self.execution_history.add(task)
 
                 header_icon = "🧪" if is_test else "⚡"
                 response = [
