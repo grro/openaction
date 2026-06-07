@@ -1,5 +1,6 @@
 import logging
 import io
+import time
 import sys
 import textwrap
 from threading import Thread, Event
@@ -425,15 +426,21 @@ class ManagedTask:
     def _root_logger_to_stdout_for_call() -> Iterator[None]:
         """Temporarily route root logger records to current stdout."""
         root_logger = logging.getLogger()
+
+        # Store original state
         previous_handlers = root_logger.handlers[:]
         previous_level = root_logger.level
         previous_disabled = root_logger.disabled
 
+        # Setup temporary stdout handler
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(logging.NOTSET)
-        if previous_handlers and previous_handlers[0].formatter is not None:
+
+        # Safely clone the formatter from the primary handler if it exists
+        if previous_handlers and previous_handlers[0].formatter:
             handler.setFormatter(previous_handlers[0].formatter)
 
+        # Apply temporary state
         root_logger.handlers = [handler]
         root_logger.disabled = False
 
@@ -442,14 +449,16 @@ class ManagedTask:
         finally:
             handler.flush()
             handler.close()
+            # Restore original state
             root_logger.handlers = previous_handlers
             root_logger.level = previous_level
             root_logger.disabled = previous_disabled
 
-    def _execute_sync(self, trigger: str, call: Callable[[], Any]) -> TaskResult:
+
+    def _execute_sync(self, trigger: str, call: Callable[[], Any]) -> 'TaskResult':
         """
         Invoke ``call`` while capturing stdout/stderr and recording a
-        :class:`TaskResult` in :attr:`last_executions`.
+        TaskResult in last_executions.
 
         The captured output and the result/error are always logged at
         INFO level, regardless of success. Exceptions are re-raised after
@@ -457,31 +466,51 @@ class ManagedTask:
         """
         revision_before = self.environment.revision
         execution_state_before = self._last_execution_state
-        start = datetime.now()
+
+        # perf_counter is strictly monotonic and immune to system clock updates
+        start_time = time.perf_counter()
         output_buffer = io.StringIO()
-        task_result: Optional[TaskResult] = None
+
+        result = None
+        error_msg = None
+
         try:
-            # Capture both standard output (print) and standard error (warnings/logs).
+            # Capture stdout, stderr, and root logs
             with redirect_stdout(output_buffer), redirect_stderr(output_buffer), self._root_logger_to_stdout_for_call():
                 result = call()
-            elapsed = datetime.now() - start
-            task_result = TaskResult(self, trigger, elapsed,result=result,output=output_buffer.getvalue())
-            return task_result
         except Exception as e:
-            elapsed = datetime.now() - start
-            task_result = TaskResult(
-                self, trigger, elapsed,
-                error=str(e),
-                output=output_buffer.getvalue(),
-            )
-            raise
+            error_msg = str(e)
+            raise  # Halts here, runs 'finally', then re-raises
         finally:
-            if task_result is not None:
-                self.last_executions.append(task_result)
-                if len(self.last_executions) > 10:
-                    del self.last_executions[0]
-                if not task_result.is_success() or revision_before != self.environment.revision or execution_state_before != self._last_execution_state:
-                    logger.info(task_result)
+            # 1. Calculate duration once
+            elapsed = timedelta(seconds=time.perf_counter() - start_time)
+
+            # 2. Build kwargs cleanly
+            kwargs = {"output": output_buffer.getvalue()}
+            if error_msg is not None:
+                kwargs["error"] = error_msg
+            else:
+                kwargs["result"] = result
+
+            # 3. Instantiate TaskResult once
+            task_result = TaskResult(self, trigger, elapsed, **kwargs)
+
+            # 4. Update ring buffer history
+            self.last_executions.append(task_result)
+            if len(self.last_executions) > 10:
+                del self.last_executions[0]
+
+            # 5. Log if necessary
+            state_changed = (
+                    revision_before != self.environment.revision or
+                    execution_state_before != self._last_execution_state
+            )
+            if not task_result.is_success() or state_changed:
+                logger.info(task_result)
+
+        # Reached only if no exceptions occurred
+        return task_result
+
 
     # ------------------------------------------------------------------
     # Persistent state helpers
