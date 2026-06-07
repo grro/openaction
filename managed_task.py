@@ -464,9 +464,9 @@ class ManagedTask:
             # Capture both standard output (print) and standard error (warnings/logs).
             with redirect_stdout(output_buffer), redirect_stderr(output_buffer), self._root_logger_to_stdout_for_call():
                 result = call()
-                elapsed = datetime.now() - start
-                task_result = TaskResult(self, trigger, elapsed,result=result,output=output_buffer.getvalue())
-                return task_result
+            elapsed = datetime.now() - start
+            task_result = TaskResult(self, trigger, elapsed,result=result,output=output_buffer.getvalue())
+            return task_result
         except Exception as e:
             elapsed = datetime.now() - start
             task_result = TaskResult(
