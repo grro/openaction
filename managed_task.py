@@ -1,11 +1,12 @@
 import logging
 import io
+import sys
 import textwrap
 from threading import Thread, Event
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stdout, redirect_stderr, contextmanager
 from dataclasses import field, InitVar, dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Iterator
 
 from api.task import BackgroundTask, AdhocTask
 from api.store import Store
@@ -80,7 +81,7 @@ class TaskResult:
         else:
             format_block("Success", self.result)
 
-        format_block("Output", self.output)
+        format_block("Output (std, error out)", self.output)
 
         return "\n".join(parts)
 
@@ -419,6 +420,32 @@ class ManagedTask:
         """
         return self._task_instance.on_execute_fw(trigger, params)
 
+    @staticmethod
+    @contextmanager
+    def _root_logger_to_stdout_for_call() -> Iterator[None]:
+        """Temporarily route root logger records to current stdout."""
+        root_logger = logging.getLogger()
+        previous_handlers = root_logger.handlers[:]
+        previous_level = root_logger.level
+        previous_disabled = root_logger.disabled
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.NOTSET)
+        if previous_handlers and previous_handlers[0].formatter is not None:
+            handler.setFormatter(previous_handlers[0].formatter)
+
+        root_logger.handlers = [handler]
+        root_logger.disabled = False
+
+        try:
+            yield
+        finally:
+            handler.flush()
+            handler.close()
+            root_logger.handlers = previous_handlers
+            root_logger.level = previous_level
+            root_logger.disabled = previous_disabled
+
     def _execute_sync(self, trigger: str, call: Callable[[], Any]) -> TaskResult:
         """
         Invoke ``call`` while capturing stdout/stderr and recording a
@@ -435,7 +462,7 @@ class ManagedTask:
         task_result: Optional[TaskResult] = None
         try:
             # Capture both standard output (print) and standard error (warnings/logs).
-            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+            with redirect_stdout(output_buffer), redirect_stderr(output_buffer), self._root_logger_to_stdout_for_call():
                 result = call()
                 elapsed = datetime.now() - start
                 task_result = TaskResult(self, trigger, elapsed,result=result,output=output_buffer.getvalue())

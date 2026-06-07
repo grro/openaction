@@ -9,7 +9,7 @@ class EventLog(ABC):
     (e.g., a roller shutter changing position, or a heater being switched on/off).
     To maintain a high signal-to-noise ratio, the volume of logged events should typically
     not exceed 30 per day. Log entries are automatically purged after a specified retention
-    period (default: 14 days).
+    period.
     """
 
     @abstractmethod
