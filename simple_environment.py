@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime, UTC
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Callable
 
 from api.environment import Environment
 from api.eventlog import EventLog
@@ -44,7 +44,16 @@ class SimpleEventLog(EventLog):
 
     def __init__(self, store: SimpleStore, name: str) -> None:
         self._log_store = ScopedStore(store, '__sys_eventlog_' + name)
+        self._name = name
         self._revision = 0
+        self._listeners = set()
+
+    def register_listener(self, listener: Callable[[str], None]) -> None:
+        self._listeners.add(listener)
+
+    def _notify_listeners(self) -> None:
+        for listener in self._listeners:
+            listener(self._name)
 
     @property
     def revision(self) -> int:
@@ -55,6 +64,7 @@ class SimpleEventLog(EventLog):
         event = Event(now, topic, text)
         self._log_store.put(now.isoformat(), event.to_str(), ttl_sec=ttl)
         self._revision += 1
+        self._notify_listeners()
 
     def events(self) -> List[Event]:
         events_list: List[Event] = []
@@ -83,7 +93,7 @@ class EnvironmentImpl(Environment):
         return self._scoped_store
 
     @property
-    def eventlog(self) -> EventLog:
+    def eventlog(self) -> SimpleEventLog:
         return self._eventlog
 
     def events(self) -> List[Event]:

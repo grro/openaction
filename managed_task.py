@@ -564,8 +564,9 @@ class ManagedTaskFactory:
         verbatim.
     """
 
-    def __init__(self, store: SimpleStore):
+    def __init__(self, store: SimpleStore, log_listener: Callable[[str], None]):
         self._store = store
+        self._log_listener = log_listener
 
     def create(self,
                name: str,
@@ -585,7 +586,7 @@ class ManagedTaskFactory:
             'ttl': -1 if ttl is None else ttl,
         }
 
-        return ManagedTask(
+        task = ManagedTask(
             self._store,
             name,
             is_ephemeral,
@@ -594,6 +595,8 @@ class ManagedTaskFactory:
             description,
             props,
         )
+        task.environment.eventlog.register_listener(self._log_listener)
+        return task
 
     def restore(self,
                 name: str,
@@ -603,7 +606,7 @@ class ManagedTaskFactory:
                 desc: str,
                 props: Dict[str, Any]) -> ManagedTask:
         """Re-create a previously persisted :class:`ManagedTask` from raw props."""
-        return ManagedTask(
+        task = ManagedTask(
             self._store,
             name,
             is_ephemeral,
@@ -612,3 +615,5 @@ class ManagedTaskFactory:
             desc,
             props,
         )
+        task.environment.eventlog.register_listener(self._log_listener)
+        return task

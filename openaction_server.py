@@ -4,8 +4,10 @@ import logging
 import base64
 import importlib.metadata
 from pathlib import Path
-from typing import  List
-
+from typing import Protocol, cast, List, Dict
+import asyncio
+from pydantic import AnyUrl, TypeAdapter
+from fastmcp import Context
 from mcp_server_base import McpServer
 from simple_store import SimpleStore
 from managed_task import ManagedTask, ManagedTaskFactory
@@ -18,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 
+class ResourceUpdateSession(Protocol):
+    async def send_resource_updated(self, uri: AnyUrl) -> None:
+        ...
+
 
 
 class OpenActionServer(McpServer):
@@ -25,10 +31,14 @@ class OpenActionServer(McpServer):
     def __init__(self, name: str, port: int, dir: str, host: str = "0.0.0.0"):
         super().__init__(name, port, host)
         self.store = SimpleStore(name="state", directory=dir)
-        self.task_factory = ManagedTaskFactory(self.store)
+        self.task_factory = ManagedTaskFactory(self.store, self.__on_value_changed)
         self.task_repository = ManagedTaskRepository(os.path.join(dir, "tasks"), self.task_factory, self.store)
+        self.active_sessions: set[ResourceUpdateSession] = set()
+        self.last_event_revision: Dict[str, str] = {}
+        self.low_level_server = self.mcp._mcp_server
+        self.loop = asyncio.new_event_loop()
+
         self.task_repository.start()
-        self.task_repository.backups()
 
 
         @self.mcp.tool()
@@ -369,6 +379,62 @@ class OpenActionServer(McpServer):
                 return f"Error: Internal server error while retrieving task details: {type(e).__name__} - {str(e)}"
 
 
+        @self.mcp.resource("event://task")
+        def get_task_event_names() -> str:
+            """
+            Discover all tasks that maintain active event logs.
+
+            Returns a comma-separated list of task names. The AI should use this
+            discovery resource first to find valid '{name}' parameters before
+            attempting to query specific task logs via the 'event://task/{name}' resource.
+            """
+            names = [t.name for t in self.task_repository.tasks.values()]
+            if not names:
+                return "No tasks available."
+            return "Available tasks: " + ", ".join(names)
+
+        @self.mcp.resource("event://task/{name}")
+        def get_task_events(name: str, ctx: Context) -> str:
+            """
+            Fetch the recent execution event log for a specific task by its name.
+
+            Returns a chronologically ordered list of events, including exact timestamps,
+            event topics, and detailed messages. This is crucial for debugging task
+            failures or monitoring background task activity.
+
+            Note: Reading this resource automatically subscribes the client to receive
+            real-time push notifications (SSE) whenever new events are logged for this
+            specific task.
+            """
+            try:
+                # Use the injected context (ctx) rather than the low_level_server directly
+                req_ctx = ctx.request_context
+                if req_ctx and req_ctx.session and req_ctx.session not in self.active_sessions:
+                    self.active_sessions.add(cast(ResourceUpdateSession, req_ctx.session))
+                    logger.info(f"[Server] Client session registered for updates (Resource: {name}).")
+            except Exception as e:
+                logger.debug(f"[Server] Could not register session: {e}")
+
+            lines = []
+            try:
+                if name in self.task_repository.tasks.keys():
+                    events = self.task_repository.tasks.get(name).environment.eventlog.events()
+                    lines.append("### 📌 Important events logged (task execution log)")
+                    if not events:
+                        lines.append("- *No recent events logged.*")
+                    else:
+                        for event in events:
+                            ts = event.timestamp.strftime("%Y-%m-%dT%H:%M:%S%z")
+                            lines.append(f"- **{ts}** | `{event.topic}`: {event.text}")
+                    lines.append("")
+                else:
+                    names = [t.name for t in self.task_repository.tasks.values()]
+                    return name + " not found. Available tasks: " + ", ".join(names)
+            except Exception as e:
+                lines.append(f"### 📌 Important Events\n- *Error retrieving events: {e}*\n")
+
+            return "\n".join(lines)
+
         @self.mcp.tool()
         def execute_task(name: str, params: List[str]) -> str:
             """
@@ -509,6 +575,31 @@ class OpenActionServer(McpServer):
             except Exception as e:
                 logger.error(f"Failed to read backup file '{name}': {e}", exc_info=True)
                 return f"Error: Failed to read backup file '{name}': {e}"
+
+
+    def __on_value_changed(self, name: str):
+        asyncio.run_coroutine_threadsafe(self._trigger_client_notification(name), self.loop)
+
+
+    async def _trigger_client_notification(self, name: str) -> None:
+        if not self.active_sessions:
+            return
+
+        for task in self.task_repository.tasks.values():
+            if task.name == name:
+                revision = self.last_event_revision.get(name, None)
+                if task.environment.eventlog.revision != revision:
+                    self.last_event_revision[name] = task.environment.eventlog.revision
+                    dead_sessions = set()
+                    for session in self.active_sessions:
+                        try:
+                            await session.send_resource_updated(TypeAdapter(AnyUrl).validate_python("event://task/" + name))
+                        except Exception as e:
+                            dead_sessions.add(session)
+
+                    self.active_sessions.difference_update(dead_sessions)
+                break
+
 
     def stop(self):
         self.task_repository.stop()
