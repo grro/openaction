@@ -476,7 +476,8 @@ class ManagedTask:
 
         try:
             # Capture stdout, stderr, and root logs
-            with redirect_stdout(output_buffer), redirect_stderr(output_buffer), self._root_logger_to_stdout_for_call():
+            #with redirect_stdout(output_buffer), redirect_stderr(output_buffer), self._root_logger_to_stdout_for_call():
+            with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
                 result = call()
         except Exception as e:
             error_msg = str(e)
