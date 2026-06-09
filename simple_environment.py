@@ -45,7 +45,7 @@ class SimpleEventLog(EventLog):
     def __init__(self, store: SimpleStore, name: str) -> None:
         self._log_store = ScopedStore(store, '__sys_eventlog_' + name)
         self._name = name
-        self._revision = datetime.now().isoformat()
+        self._revision = datetime.now(UTC).isoformat()
         self._listeners = set()
 
     def register_listener(self, listener: Callable[[str], None]) -> None:
