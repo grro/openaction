@@ -45,7 +45,7 @@ class SimpleEventLog(EventLog):
     def __init__(self, store: SimpleStore, name: str) -> None:
         self._log_store = ScopedStore(store, '__sys_eventlog_' + name)
         self._name = name
-        self._revision = 0
+        self._revision = datetime.now().isoformat()
         self._listeners = set()
 
     def register_listener(self, listener: Callable[[str], None]) -> None:
@@ -56,15 +56,19 @@ class SimpleEventLog(EventLog):
             listener(self._name)
 
     @property
-    def revision(self) -> int:
+    def revision(self) -> str:
         return self._revision
 
     def log_event(self, topic: str, text: str, ttl: int = 14 * 24 * 60 * 60) -> None:
         now = datetime.now(UTC)
         event = Event(now, topic, text)
         self._log_store.put(now.isoformat(), event.to_str(), ttl_sec=ttl)
-        self._revision += 1
+        self._revision = now.isoformat()
         self._notify_listeners()
+
+    def events_since_revision(self, revision: str) -> List[Event]:
+        from_date = datetime.fromisoformat(revision)
+        return [event for event in self.events() if event.timestamp > from_date]
 
     def events(self) -> List[Event]:
         events_list: List[Event] = []
@@ -83,10 +87,6 @@ class EnvironmentImpl(Environment):
     def __init__(self, store: SimpleStore, name: str) -> None:
         self._scoped_store = ScopedStore(store, name)
         self._eventlog = SimpleEventLog(store, name)
-
-    @property
-    def revision(self) -> int:
-        return self._eventlog.revision
 
     @property
     def store(self) -> Store:

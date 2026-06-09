@@ -7,7 +7,7 @@ from threading import Thread, Event
 from contextlib import redirect_stdout, redirect_stderr, contextmanager
 from dataclasses import field, InitVar, dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Callable, Iterator
+from typing import Any, Dict, List, Optional, Callable, Iterator, cast
 
 from api.task import BackgroundTask, AdhocTask
 from api.store import Store
@@ -49,6 +49,7 @@ class TaskResult:
     task: InitVar['ManagedTask']
     trigger: str
     elapsed: timedelta
+    events: List[Event] = field(default_factory=list)
 
     result: str | None = None
     output: str | None = None
@@ -71,16 +72,31 @@ class TaskResult:
         # Primary header line.
         parts = [f"{self.name} executed [{status}] | Trigger: '{self.trigger}' | Elapsed: {elapsed_sec}"]
 
-        # Helper that appends a titled, indented block if `content` is set.
-        def format_block(title: str, content: str | None) -> None:
-            if content is not None:
-                parts.append(f"--- {title} ---")
-                parts.append(textwrap.indent(str(content).strip(), "  | "))
+        # Append titled sections; lists are rendered entry-by-entry for readability.
+        def format_block(title: str, content: Any | None) -> None:
+            if content is None:
+                return
+
+            parts.append(f"--- {title} ---")
+
+            if isinstance(content, list):
+                if not content:
+                    parts.append("  | (none)")
+                    return
+
+                for item in content:
+                    parts.append(textwrap.indent(str(item).strip(), "  | "))
+                return
+
+            rendered = str(content).strip()
+            parts.append(textwrap.indent(rendered if rendered else "(empty)", "  | "))
 
         if self.error:
             format_block("Error", self.error)
         else:
             format_block("Success", self.result)
+
+        format_block("Events", self.events)
 
         format_block("Output (std, error out)", self.output)
 
@@ -464,7 +480,7 @@ class ManagedTask:
         INFO level, regardless of success. Exceptions are re-raised after
         being recorded, so callers can react to failures.
         """
-        revision_before = self.environment.revision
+        eventlog_revision_before = self.environment.eventlog.revision
         execution_state_before = self._last_execution_state
 
         # perf_counter is strictly monotonic and immune to system clock updates
@@ -494,7 +510,8 @@ class ManagedTask:
                 kwargs["result"] = result
 
             # 3. Instantiate TaskResult once
-            task_result = TaskResult(self, trigger, elapsed, **kwargs)
+            events = self.environment.eventlog.events_since_revision(eventlog_revision_before)  # Force any pending events to be included in the revision
+            task_result = TaskResult(self, trigger, elapsed, events,**kwargs)
 
             # 4. Update ring buffer history
             self.last_executions.append(task_result)
@@ -503,7 +520,7 @@ class ManagedTask:
 
             # 5. Log if necessary
             state_changed = (
-                    revision_before != self.environment.revision or
+                    eventlog_revision_before != self.environment.eventlog.revision or
                     execution_state_before != self._last_execution_state
             )
             if not task_result.is_success() or state_changed:
