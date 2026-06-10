@@ -519,11 +519,7 @@ class ManagedTask:
                 del self.last_executions[0]
 
             # 5. Log if necessary
-            state_changed = (
-                    eventlog_revision_before != self.environment.eventlog.revision or
-                    execution_state_before != self._last_execution_state
-            )
-            if not task_result.is_success() or state_changed:
+            if not task_result.is_success() or eventlog_revision_before != self.environment.eventlog.revision:
                 logger.info(task_result)
 
         # Reached only if no exceptions occurred
