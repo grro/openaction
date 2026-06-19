@@ -1,11 +1,10 @@
-import json
 import logging
 import threading
 import shutil
 from pathlib import Path
 from datetime import datetime, timedelta
 from threading import Event
-from typing import Dict, Set, List, Any
+from typing import Dict, Set, List
 
 from attr import dataclass
 
@@ -244,29 +243,28 @@ class ManagedTaskRepository:
         current_day_key = datetime.now().strftime(DAY_PATTERN)
         latest_backup_day_key = self._store.get(BACKUP_KEY, "?")
         if current_day_key != latest_backup_day_key:
-            filepath = self._code_repository.backup(f"backup_{current_day_key}.zip")
+            daily_backup_filepath = self._code_repository.backup(f"backup_{current_day_key}.zip")
             self._store.put(BACKUP_KEY, current_day_key)
-            self._process_monthly_backup(filepath)
+            self._process_monthly_backup(daily_backup_filepath)
             self._cleanup_old_daily_backups()
 
-    def _process_monthly_backup(self, backup_p: Path) -> None:
+    def _process_monthly_backup(self, daily_backup_filepath: Path) -> None:
         current_month_str = datetime.now().strftime("%Y%m")
-        monthly_p = backup_p.parent / f"backup_{current_month_str}.zip"
+        monthly_p = daily_backup_filepath.parent / f"backup_{current_month_str}.zip"
 
-        if not monthly_p.exists():
-            temp_p = backup_p.parent / f"backup_tmp_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
-            try:
-                shutil.copy(backup_p, temp_p)
-                temp_p.replace(monthly_p)
-                logger.info(f"Created monthly backup: {monthly_p.name}")
-            except Exception as e:
-                logger.warning(f"Failed to create monthly backup {monthly_p.name}: {e}")
-            finally:
-                if temp_p.exists():
-                    try:
-                        temp_p.unlink()
-                    except Exception:
-                        pass
+        temp_p = daily_backup_filepath.parent / f"backup_tmp_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
+        try:
+            shutil.copy(daily_backup_filepath, temp_p)
+            temp_p.replace(monthly_p)
+            logger.info(f"Wrote monthly backup: {monthly_p.name}")
+        except Exception as e:
+            logger.warning(f"Failed to create monthly backup {monthly_p.name}: {e}")
+        finally:
+            if temp_p.exists():
+                try:
+                    temp_p.unlink()
+                except Exception:
+                    pass
 
     def _cleanup_old_daily_backups(self, max_age_days: int = 14) -> None:
         now = datetime.now()
