@@ -280,6 +280,8 @@ class OpenActionServer(McpServer):
             Looks up `name` first in the permanent registry, then in the
             ephemeral execution history. Includes:
              * type (`ADHOC` / `BACKGROUND`) and lifecycle (`PERMANENT` / `EPHEMERAL`)
+             * health/liveness (lifecycle state, whether the background loop is
+               still ticking, loop-tick and last-success ages, failure streak)
              * the most recent execution records (timestamp, trigger, status,
                duration, and a truncated output or error excerpt)
              * persistent store contents associated with the task (if any)
@@ -306,6 +308,28 @@ class OpenActionServer(McpServer):
                     f"**Description:** {getattr(task, 'description', 'No description provided.')}",
                     ""
                 ]
+
+                # 2b. Health / Liveness Section
+                if hasattr(task, 'health'):
+                    try:
+                        h = task.health()
+
+                        def _fmt_age(seconds):
+                            if seconds is None:
+                                return "never"
+                            return f"{float(seconds):.0f}s ago"
+
+                        healthy = h.get("healthy")
+                        health_mark = "✅ HEALTHY" if healthy else (
+                            "➖ INACTIVE" if not h.get("is_activated") else "❌ UNHEALTHY")
+                        lines.append("### 🩺 Health")
+                        lines.append(f"- **Status:** `{health_mark}` (state: `{h.get('state')}`)")
+                        lines.append(f"- **Loop tick:** {_fmt_age(h.get('loop_tick_age_s'))}")
+                        lines.append(f"- **Last success:** {_fmt_age(h.get('last_success_age_s'))}")
+                        lines.append(f"- **Consecutive failures:** `{h.get('consecutive_failures')}`")
+                        lines.append("")
+                    except Exception as e:
+                        lines.append(f"### 🩺 Health\n- *Error retrieving health: {e}*\n")
 
                 # 3. Last Execution Section
                 lines.append("### ⏱️ Last Execution")

@@ -116,6 +116,7 @@ class ManagedTaskRepository:
         task = self.tasks.pop(name, None)
         if task:
             task.deactivate()
+            task.await_stopped()
             task.reset()
             logger.info(f"Task '{name}' has been deregistered (Reason: {reason})")
         self._code_repository.delete_image(name)
@@ -132,6 +133,38 @@ class ManagedTaskRepository:
         self._is_running = False
         # Wake the loop immediately so we don't have to wait out the current sleep.
         self._stop_event.set()
+
+    def health_report(self) -> List[Dict[str, object]]:
+        """Return a health snapshot for every registered task (for monitoring)."""
+        return [t.health() for t in list(self.tasks.values())]
+
+    def restart(self, name: str) -> bool:
+        """
+        Restart a single task (deactivate, wait for the old loop to stop,
+        re-activate). Returns ``False`` if no such task is registered.
+        """
+        task = self.tasks.get(name)
+        if task is None:
+            return False
+        task.deactivate()
+        task.await_stopped()
+        task.activate()
+        logger.info(f"Task '{name}' restarted by watchdog/operator.")
+        return True
+
+    def watchdog_sweep(self, max_tick_age_s: float = 150.0, restart: bool = True) -> None:
+        """
+        Detect activated background tasks whose loop has stopped ticking and
+        restart them. The liveness check applies to all activated background
+        tasks: every loop iteration refreshes the tick, regardless of cron.
+        """
+        for task in list(self.tasks.values()):
+            if not task.is_background_task or not task.is_activated:
+                continue
+            if not task.is_healthy(max_tick_age_s):
+                logger.error(f"Watchdog: task '{task.name}' is unhealthy -> {task.health(max_tick_age_s)}")
+                if restart:
+                    self.restart(task.name)
 
     # ------------------------------------------------------------------
     # Internals
@@ -166,9 +199,15 @@ class ManagedTaskRepository:
             return
 
         # If we are replacing an existing task, stop the old one cleanly first
-        # so it doesn't keep running in parallel with the new revision.
+        # and wait for its loop thread to terminate, so it cannot keep running
+        # in parallel with the new revision (avoids zombie loop threads).
         if is_updated:
             existing.deactivate()
+            if not existing.await_stopped():
+                logger.warning(
+                    f"Old instance of task '{name}' did not stop within timeout; "
+                    f"replacing anyway (its loop thread is still winding down)."
+                )
 
         self.tasks[name] = task
 
@@ -199,6 +238,11 @@ class ManagedTaskRepository:
                     self.perform_backup()
                 except Exception as e:
                     logger.exception(f"Unexpected error during code repository backup: {e}")
+
+            try:
+                self.watchdog_sweep()
+            except Exception as e:
+                logger.exception(f"Unexpected error in watchdog sweep: {e}")
 
             # `wait()` returns True if stop() was called, in which case we exit.
             if self._stop_event.wait(timeout=60):
@@ -266,7 +310,7 @@ class ManagedTaskRepository:
                 except Exception:
                     pass
 
-    def _cleanup_old_daily_backups(self, max_age_days: int = 14) -> None:
+    def _cleanup_old_daily_backups(self, max_age_days: int = 8) -> None:
         now = datetime.now()
         backup_files_list = self._code_repository.backupfiles()  # type: ignore
         for file_str, task_infos in backup_files_list:

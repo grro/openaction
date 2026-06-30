@@ -150,13 +150,8 @@ class Image:
             new_path.rename(old_path)
             temp_path.rename(new_path)
             shutil.rmtree(old_path)
-            logger.info(
-                f"Replaced existing directory: {new_path} was updated "
-                "and previous content deleted."
-            )
         else:
             old_path.rename(new_path)
-            logger.info(f"Renamed image directory from {old_path} to {new_path}")
 
         self.unit_name = new_name
         return self
