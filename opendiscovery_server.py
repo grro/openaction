@@ -7,7 +7,7 @@ from time import sleep
 
 from service_registry import ServiceRegistry, Service
 from typing import Dict, List, Set, Any
-from zeroconf import Zeroconf, ServiceBrowser, ServiceListener, ZeroconfServiceTypes
+from zeroconf import Zeroconf, ServiceBrowser, ServiceListener, ZeroconfServiceTypes, BadTypeInNameException
 
 from mcp_server_base import McpServer
 from simple_store import ScopedStore, SimpleStore
@@ -189,7 +189,13 @@ class MDNSRegistry:
             if all_types:
                 listener = _AnyListener()
                 for service_type in all_types:
-                    browsers.append(ServiceBrowser(zc, service_type, listener))
+                    if not service_type or not service_type.endswith(".local."):
+                        logger.debug(f"Skipping malformed mDNS service type: {service_type!r}")
+                        continue
+                    try:
+                        browsers.append(ServiceBrowser(zc, service_type, listener))
+                    except BadTypeInNameException as e:
+                        logger.debug(f"Skipping invalid mDNS service type {service_type!r}: {e}")
 
                 # Allow services time to respond, but wake early on shutdown.
                 sleep(timeout_seconds)
